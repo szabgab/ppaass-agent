@@ -3,13 +3,14 @@ use std::{mem::size_of, net::SocketAddr};
 use bytes::BytesMut;
 use futures::StreamExt;
 use log::{debug, error};
-use ppaass_common::PpaassNetAddress;
+
+use ppaass_protocol::message::NetAddress;
 use tokio::net::TcpStream;
 use tokio_util::codec::{Decoder, Framed, FramedParts};
 
 use crate::{
     config::AGENT_CONFIG,
-    error::{AgentError, DecoderError},
+    error::AgentError,
     transport::{http::HttpClientTransport, socks::Socks5ClientTransport},
     SOCKS_V4, SOCKS_V5,
 };
@@ -30,7 +31,7 @@ pub(crate) struct SwitchClientProtocolDecoder;
 impl Decoder for SwitchClientProtocolDecoder {
     type Item = ClientProtocol;
 
-    type Error = DecoderError;
+    type Error = AgentError;
 
     fn decode(&mut self, src: &mut BytesMut) -> Result<Option<Self::Item>, Self::Error> {
         // Use the first byte to decide what protocol the client side is using.
@@ -48,7 +49,7 @@ impl Decoder for SwitchClientProtocolDecoder {
 
 pub(crate) struct ClientTransportHandshakeInfo {
     pub(crate) client_tcp_stream: TcpStream,
-    pub(crate) src_address: PpaassNetAddress,
+    pub(crate) src_address: NetAddress,
     pub(crate) initial_buf: BytesMut,
 }
 
@@ -56,19 +57,32 @@ pub(crate) struct ClientTransportDispatcher;
 
 impl ClientTransportDispatcher {
     pub(crate) async fn dispatch(
-        client_tcp_stream: TcpStream, client_socket_address: SocketAddr,
-    ) -> Result<(ClientTransportHandshakeInfo, Box<dyn ClientTransportHandshake + Send + Sync>), AgentError> {
-        let mut client_message_framed = Framed::with_capacity(client_tcp_stream, SwitchClientProtocolDecoder, AGENT_CONFIG.get_client_receive_buffer_size());
+        client_tcp_stream: TcpStream,
+        client_socket_address: SocketAddr,
+    ) -> Result<
+        (
+            ClientTransportHandshakeInfo,
+            Box<dyn ClientTransportHandshake + Send + Sync>,
+        ),
+        AgentError,
+    > {
+        let mut client_message_framed = Framed::with_capacity(
+            client_tcp_stream,
+            SwitchClientProtocolDecoder,
+            AGENT_CONFIG.get_client_receive_buffer_size(),
+        );
         let client_protocol = match client_message_framed.next().await {
             Some(Ok(client_protocol)) => client_protocol,
             Some(Err(e)) => {
                 error!("Fail to read protocol from client io because of error: {e:?}");
                 return Err(e.into());
-            },
+            }
             None => {
                 error!("Fail to read protocol from client io because of nothing to read.");
-                return Err(DecoderError::UnknownProtocol.into());
-            },
+                return Err(AgentError::Other(format!(
+                    "Fail to read protocol from client io because of nothing to read."
+                )));
+            }
         };
 
         match client_protocol {
@@ -88,12 +102,12 @@ impl ClientTransportDispatcher {
                     },
                     Box::new(Socks5ClientTransport),
                 ))
-            },
+            }
             ClientProtocol::Socks4 => {
                 // For socks4 protocol
                 error!("Client tcp connection [{client_socket_address}] do not support socks v4 protocol");
                 Err(DecoderError::UnsupportProtocol.into())
-            },
+            }
             ClientProtocol::Http => {
                 // For http protocol
                 let FramedParts {
@@ -101,7 +115,9 @@ impl ClientTransportDispatcher {
                     read_buf: initial_buf,
                     ..
                 } = client_message_framed.into_parts();
-                debug!("Client tcp connection [{client_socket_address}] begin to serve http protocol");
+                debug!(
+                    "Client tcp connection [{client_socket_address}] begin to serve http protocol"
+                );
                 Ok((
                     ClientTransportHandshakeInfo {
                         client_tcp_stream,
@@ -110,7 +126,7 @@ impl ClientTransportDispatcher {
                     },
                     Box::new(HttpClientTransport),
                 ))
-            },
+            }
         }
     }
 }
