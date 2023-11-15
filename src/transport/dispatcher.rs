@@ -106,7 +106,9 @@ impl ClientTransportDispatcher {
             ClientProtocol::Socks4 => {
                 // For socks4 protocol
                 error!("Client tcp connection [{client_socket_address}] do not support socks v4 protocol");
-                Err(DecoderError::UnsupportProtocol.into())
+                Err(AgentError::Other(format!(
+                    "Unsupported socks4 protocol for client: {client_socket_address}"
+                )))
             }
             ClientProtocol::Http => {
                 // For http protocol

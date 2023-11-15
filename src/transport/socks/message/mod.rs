@@ -130,7 +130,10 @@ impl TryFrom<Socks5Address> for SocketAddr {
             }
             Socks5Address::Domain(host, port) => {
                 let address_string = format!("{host}:{port}");
-                let addresses = address_string.to_socket_addrs()?.collect::<Vec<_>>();
+                let addresses = address_string
+                    .to_socket_addrs()
+                    .map_err(AgentError::Io)?
+                    .collect::<Vec<_>>();
                 let result = addresses.get(0).ok_or(AgentError::Other(format!(
                     "Fail to parse domain address: {address_string}"
                 )))?;

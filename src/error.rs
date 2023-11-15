@@ -9,10 +9,15 @@ pub enum AgentError {
     Timeout(u64),
     #[error("I/O error happen: {0:?}")]
     Io(#[from] StdIoError),
-    #[error("Decoder error happen: {0:?}")]
-    Decoder(#[from] DecoderError),
-    #[error("Encoder error happen: {0:?}")]
-    Encoder(#[from] EncoderError),
+    #[error("Proxy decoder error happen: {0:?}")]
+    DecoderProxy(#[from] DecoderError),
+    #[error("Proxy encoder error happen: {0:?}")]
+    EncoderProxy(#[from] EncoderError),
+
+    // #[error("Client decoder error happen: {0:?}")]
+    // DecoderClient(#[from] DecoderError),
+    // #[error("Client encoder error happen: {0:?}")]
+    // EncoderClient(#[from] EncoderError),
     #[error("Protocol error happen: {0:?}")]
     Protocol(#[from] ProtocolError),
     #[error("Other error happen: {0}")]

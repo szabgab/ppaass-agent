@@ -8,9 +8,7 @@ use tokio::{net::TcpStream, time::timeout};
 use log::{debug, error};
 
 use crate::{
-    config::AGENT_CONFIG,
-    crypto::AgentServerRsaCryptoFetcher,
-    error::{AgentError, NetworkError},
+    config::AGENT_CONFIG, crypto::AgentServerRsaCryptoFetcher, error::AgentError,
     RSA_CRYPTO_FETCHER,
 };
 
@@ -52,20 +50,18 @@ impl ProxyConnectionFactory {
         {
             Err(_) => {
                 error!("Fail connect to proxy because of timeout.");
-                return Err(
-                    NetworkError::Timeout(AGENT_CONFIG.get_connect_to_proxy_timeout()).into(),
-                );
+                return Err(AgentError::Timeout(
+                    AGENT_CONFIG.get_connect_to_proxy_timeout(),
+                ));
             }
             Ok(Ok(proxy_tcp_stream)) => proxy_tcp_stream,
             Ok(Err(e)) => {
                 error!("Fail connect to proxy because of error: {e:?}");
-                return Err(NetworkError::TcpConnect(e).into());
+                return Err(AgentError::Io(e));
             }
         };
         debug!("Success connect to proxy.");
-        proxy_tcp_stream
-            .set_nodelay(true)
-            .map_err(NetworkError::PropertyModification)?;
+        proxy_tcp_stream.set_nodelay(true).map_err(AgentError::Io)?;
         let proxy_connection = Connection::new(
             proxy_tcp_stream,
             RSA_CRYPTO_FETCHER

@@ -10,11 +10,7 @@ use std::{
 };
 
 use self::dispatcher::ClientTransportHandshakeInfo;
-use crate::{
-    config::AGENT_CONFIG,
-    crypto::AgentServerRsaCryptoFetcher,
-    error::{AgentError, NetworkError},
-};
+use crate::{config::AGENT_CONFIG, crypto::AgentServerRsaCryptoFetcher, error::AgentError};
 
 use async_trait::async_trait;
 use bytes::{Bytes, BytesMut};
@@ -66,34 +62,34 @@ impl<T> Sink<BytesMut> for ClientConnectionWrite<T>
 where
     T: AsyncRead + AsyncWrite + Send + Sync + Unpin + 'static,
 {
-    type Error = NetworkError;
+    type Error = AgentError;
 
     fn poll_ready(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
         let this = self.project();
         this.client_bytes_framed_write
             .poll_ready(cx)
-            .map_err(NetworkError::General)
+            .map_err(|e| AgentError::Io(e))
     }
 
     fn start_send(self: Pin<&mut Self>, item: BytesMut) -> Result<(), Self::Error> {
         let this = self.project();
         this.client_bytes_framed_write
             .start_send(item)
-            .map_err(NetworkError::General)
+            .map_err(|e| AgentError::Io(e))
     }
 
     fn poll_flush(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
         let this = self.project();
         this.client_bytes_framed_write
             .poll_flush(cx)
-            .map_err(NetworkError::General)
+            .map_err(|e| AgentError::Io(e))
     }
 
     fn poll_close(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
         let this = self.project();
         this.client_bytes_framed_write
             .poll_close(cx)
-            .map_err(NetworkError::General)
+            .map_err(|e| AgentError::Io(e))
     }
 }
 
@@ -126,13 +122,13 @@ impl<T> Stream for ClientConnectionRead<T>
 where
     T: AsyncRead + AsyncWrite + Send + Sync + Unpin + 'static,
 {
-    type Item = Result<BytesMut, NetworkError>;
+    type Item = Result<BytesMut, AgentError>;
 
     fn poll_next(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
         let this = self.project();
         this.client_bytes_framed_read
             .poll_next(cx)
-            .map_err(NetworkError::General)
+            .map_err(|e| AgentError::Io(e))
     }
 }
 
@@ -186,9 +182,7 @@ pub(crate) trait ClientTransportRelay {
     ) -> Result<(), AgentError> {
         let user_token = AGENT_CONFIG
             .get_user_token()
-            .ok_or(AgentError::Configuration(
-                "User token not configured.".to_string(),
-            ))?;
+            .ok_or(AgentError::Other("User token not configured.".to_string()))?;
         let payload_encryption = Encryption::Aes(random_16_bytes());
         let ClientTransportTcpDataRelay {
             client_tcp_stream,
