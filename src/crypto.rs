@@ -2,23 +2,22 @@ use std::collections::HashMap;
 
 use crate::config::AGENT_CONFIG;
 use anyhow::{Context, Result};
-use lazy_static::lazy_static;
 use log::error;
-use ppaass_common::{RsaCrypto, RsaCryptoFetcher, RsaError};
-
-lazy_static! {
-    pub(crate) static ref RSA_CRYPTO: AgentServerRsaCryptoFetcher = AgentServerRsaCryptoFetcher::new().expect("Can not initialize agent rsa crypto fetcher.");
-}
+use ppaass_crypto::{CryptoError, RsaCrypto, RsaCryptoFetcher};
 
 #[derive(Debug)]
-pub(crate) struct AgentServerRsaCryptoFetcher {
+pub struct AgentServerRsaCryptoFetcher {
     cache: HashMap<String, RsaCrypto>,
 }
 
 impl AgentServerRsaCryptoFetcher {
-    pub(crate) fn new() -> Result<Self> {
-        let mut result = Self { cache: HashMap::new() };
-        let rsa_dir_path = AGENT_CONFIG.get_rsa_dir().context("fail to get rsa directory from configuration file")?;
+    pub fn new() -> Result<Self> {
+        let mut result = Self {
+            cache: HashMap::new(),
+        };
+        let rsa_dir_path = AGENT_CONFIG
+            .get_rsa_dir()
+            .context("fail to get rsa directory from configuration file")?;
         let rsa_dir = std::fs::read_dir(rsa_dir_path).context("fail to read rsa directory")?;
         rsa_dir.for_each(|entry| {
             let Ok(entry) = entry else {
@@ -64,7 +63,7 @@ impl AgentServerRsaCryptoFetcher {
 }
 
 impl RsaCryptoFetcher for AgentServerRsaCryptoFetcher {
-    fn fetch(&self, user_token: impl AsRef<str>) -> Result<Option<&RsaCrypto>, RsaError> {
-        Ok(self.cache.get(user_token.as_ref()))
+    fn fetch(&self, user_token: &str) -> Result<Option<&RsaCrypto>, CryptoError> {
+        Ok(self.cache.get(user_token))
     }
 }

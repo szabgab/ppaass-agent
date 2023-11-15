@@ -1,14 +1,15 @@
-use ppaass_common::PpaassMessagePayloadEncryptionSelector;
+use std::sync::{Arc, OnceLock};
+
+use crypto::AgentServerRsaCryptoFetcher;
 
 pub mod config;
 pub(crate) mod connection;
-pub(crate) mod crypto;
+pub mod crypto;
 pub mod error;
 pub mod server;
 pub(crate) mod transport;
 
 pub(crate) const SOCKS_V5: u8 = 5;
 pub(crate) const SOCKS_V4: u8 = 4;
-pub(crate) struct AgentServerPayloadEncryptionTypeSelector;
 
-impl PpaassMessagePayloadEncryptionSelector for AgentServerPayloadEncryptionTypeSelector {}
+pub static RSA_CRYPTO_FETCHER: OnceLock<Arc<AgentServerRsaCryptoFetcher>> = OnceLock::new();
