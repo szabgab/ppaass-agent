@@ -20,7 +20,7 @@ use ppaass_common::{
 };
 
 use ppaass_crypto::random_16_bytes;
-use ppaass_protocol::message::Encryption;
+use ppaass_protocol::message::{Encryption, PayloadType, WrapperMessage};
 use tokio_util::codec::{Framed, FramedParts};
 use url::Url;
 
@@ -143,15 +143,30 @@ impl ClientTransportHandshake for HttpClientTransport {
         );
         proxy_connection.send(tcp_init_request).await?;
 
-        let proxy_message = proxy_connection
-            .next()
-            .await
-            .ok_or(NetworkError::ConnectionExhausted)??;
+        let proxy_wrapped_message =
+            proxy_connection
+                .next()
+                .await
+                .ok_or(AgentError::Other(format!(
+                    "Proxy connection [{}] exhausted.",
+                    proxy_connection.get_connection_id()
+                )))??;
 
-        let PpaassProxyMessage {
-            payload: PpaassProxyMessagePayload { protocol, data },
+        let WrapperMessage {
+            unique_id,
+            user_token,
+            encryption,
+            payload_type,
+            payload,
             ..
-        } = proxy_message;
+        } = proxy_wrapped_message;
+
+        if PayloadType::Tcp != payload_type {
+            return Err(AgentError::Other(format!(
+                "Proxy connection [{}] has invalid payload type: {payload_type:?}",
+                proxy_connection.get_connection_id()
+            )));
+        }
 
         let tcp_init_response = match protocol {
             PpaassMessageProxyProtocol::Tcp(PpaassMessageProxyTcpPayloadType::Init) => {
