@@ -20,7 +20,9 @@ use ppaass_common::{
 };
 
 use ppaass_crypto::random_16_bytes;
-use ppaass_protocol::message::{Encryption, PayloadType, WrapperMessage};
+use ppaass_protocol::message::{
+    Encryption, PayloadType, ProxyTcpInitResponseStatus, ProxyTcpPayload, WrapperMessage,
+};
 use tokio_util::codec::{Framed, FramedParts};
 use url::Url;
 
@@ -168,22 +170,22 @@ impl ClientTransportHandshake for HttpClientTransport {
             )));
         }
 
-        let tcp_init_response = match protocol {
-            PpaassMessageProxyProtocol::Tcp(PpaassMessageProxyTcpPayloadType::Init) => {
-                data.try_into()?
+        let ProxyTcpInitResponseStatus::Success {
+            connection_id,
+            src_address,
+            dst_address,
+        } = match payload.try_into()? {
+            ProxyTcpPayload::Data {
+                connection_id,
+                data,
+            } => {
+                return Err(AgentError::Other(format!("Proxy connection [{connection_id}] fail to connect destination because of invalid status")));
             }
-            _ => {
-                return Err(AgentError::InvalidProxyResponse(
-                    "Not a tcp init response.".to_string(),
-                ));
+            ProxyTcpPayload::InitResponse(ProxyTcpInitResponseStatus::Failure(reason)) => {
+                return Err(AgentError::Other(format!("Proxy connection [{}] fail to connect destination because of reason: {reason:?}",proxy_connection.get_connection_id())));
             }
+            ProxyTcpPayload::InitResponse(success_obj) => success_obj,
         };
-
-        let ProxyTcpInit {
-            id: tcp_loop_key,
-            result_type: response_type,
-            ..
-        } = tcp_init_response;
 
         match response_type {
             ProxyTcpInitResultType::Success => {
