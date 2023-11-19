@@ -240,7 +240,7 @@ pub(crate) trait ClientTransportRelay {
                         Ok(agent_tcp_data) => agent_tcp_data,
                         Err(e) => {
                             error!("Fail to create agent tcp data because of error: {e:?}");
-                            continue;
+                            return;
                         }
                     };
 
@@ -288,6 +288,7 @@ pub(crate) trait ClientTransportRelay {
                         bytes_to_send.extend_from_slice(&data);
                         if let Err(e) = client_io_write.send(bytes_to_send).await {
                             error!("Fail to send proxy connection [{connection_id}] data to client because of error: {e:?}");
+                            return;
                         };
                     }
                 }
