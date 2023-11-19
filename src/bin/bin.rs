@@ -1,8 +1,11 @@
+use std::sync::Arc;
+
 use anyhow::Result;
 
 use log::error;
 use ppaass_agent_windows_lib::{
     config::AGENT_CONFIG, crypto::AgentServerRsaCryptoFetcher, server::AgentServer,
+    RSA_CRYPTO_FETCHER,
 };
 use tokio::runtime::Builder;
 

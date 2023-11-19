@@ -24,9 +24,7 @@ pub(crate) struct ProxyConnectionFactory {
 
 impl ProxyConnectionFactory {
     pub(crate) fn new() -> Result<Self, AgentError> {
-        let proxy_addresses_configuration = AGENT_CONFIG
-            .get_proxy_addresses()
-            .expect("Fail to parse proxy addresses from configuration file");
+        let proxy_addresses_configuration = AGENT_CONFIG.get_proxy_addresses();
         let proxy_addresses: Vec<SocketAddr> = proxy_addresses_configuration
             .iter()
             .filter_map(|addr| SocketAddr::from_str(addr).ok())

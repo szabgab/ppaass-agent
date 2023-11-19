@@ -1,8 +1,5 @@
 pub(crate) mod codec;
 
-use std::arch::x86_64::_rdrand16_step;
-
-use anyhow::anyhow;
 use async_trait::async_trait;
 use bytecodec::{bytes::BytesEncoder, EncodeExt};
 
@@ -10,19 +7,12 @@ use bytes::Bytes;
 use derive_more::Constructor;
 use futures::{SinkExt, StreamExt};
 use httpcodec::{BodyEncoder, HttpVersion, ReasonPhrase, RequestEncoder, Response, StatusCode};
-use log::{debug, error};
-use ppaass_common::{
-    generate_uuid,
-    tcp::{ProxyTcpInit, ProxyTcpInitResultType},
-    PpaassMessageGenerator, PpaassMessagePayloadEncryptionSelector, PpaassMessageProxyProtocol,
-    PpaassMessageProxyTcpPayloadType, PpaassNetAddress, PpaassProxyMessage,
-    PpaassProxyMessagePayload,
-};
+use log::debug;
 
-use ppaass_crypto::random_16_bytes;
 use ppaass_protocol::message::{
-    Encryption, PayloadType, ProxyTcpInitResponseStatus, ProxyTcpPayload, WrapperMessage,
+    NetAddress, ProxyTcpInitResponseStatus, ProxyTcpPayload, UnwrappedProxyTcpPayload,
 };
+use ppaass_protocol::unwrap_proxy_tcp_payload;
 use tokio_util::codec::{Framed, FramedParts};
 use url::Url;
 
@@ -120,32 +110,24 @@ impl ClientTransportHandshake for HttpClientTransport {
                 "0.0.0.1 or 127.0.0.1 is not a valid destination address".to_string(),
             ));
         }
-        let dst_address = PpaassNetAddress::Domain {
+        let dst_address = NetAddress::Domain {
             host: target_host,
             port: target_port,
         };
-
-        let user_token = AGENT_CONFIG
-            .get_user_token()
-            .ok_or(AgentError::Other("User token not configured.".to_string()))?;
-
-        let payload_encryption = Encryption::Aes(random_16_bytes());
-        let tcp_init_request = PpaassMessageGenerator::generate_agent_tcp_init_message(
-            user_token,
-            src_address.clone(),
-            dst_address.clone(),
-            payload_encryption.clone(),
-        )?;
-
+        let user_token = AGENT_CONFIG.get_user_token();
         let mut proxy_connection = PROXY_CONNECTION_FACTORY.create_connection().await?;
-
         debug!(
             "Client tcp connection [{src_address}] take proxy connection [{}] to do proxy",
             proxy_connection.get_connection_id()
         );
-        proxy_connection.send(tcp_init_request).await?;
+        let agent_tcp_init_request = ppaass_protocol::new_agent_tcp_init_request(
+            user_token.to_string(),
+            src_address,
+            dst_address,
+        )?;
+        proxy_connection.send(agent_tcp_init_request).await?;
 
-        let proxy_wrapped_message =
+        let proxy_wrapper_message =
             proxy_connection
                 .next()
                 .await
@@ -153,57 +135,33 @@ impl ClientTransportHandshake for HttpClientTransport {
                     "Proxy connection [{}] exhausted.",
                     proxy_connection.get_connection_id()
                 )))??;
-
-        let WrapperMessage {
-            unique_id,
-            user_token,
-            encryption,
-            payload_type,
-            payload,
-            ..
-        } = proxy_wrapped_message;
-
-        if PayloadType::Tcp != payload_type {
-            return Err(AgentError::Other(format!(
-                "Proxy connection [{}] has invalid payload type: {payload_type:?}",
-                proxy_connection.get_connection_id()
-            )));
-        }
-
-        let ProxyTcpInitResponseStatus::Success {
-            connection_id,
-            src_address,
-            dst_address,
-        } = match payload.try_into()? {
-            ProxyTcpPayload::Data {
+        let UnwrappedProxyTcpPayload { payload, .. } =
+            unwrap_proxy_tcp_payload(proxy_wrapper_message)?;
+        let (connection_id, src_address, dst_address) = match payload {
+            ProxyTcpPayload::Data { connection_id, .. } => {
+                return Err(AgentError::Other(format!(
+                    "Proxy connection [{connection_id}] fail to connect destination because of invalid status"
+                )));
+            }
+            ProxyTcpPayload::InitResponse(ProxyTcpInitResponseStatus::Failure {
                 connection_id,
-                data,
-            } => {
-                return Err(AgentError::Other(format!("Proxy connection [{connection_id}] fail to connect destination because of invalid status")));
+                src_address,
+                dst_address,
+                reason,
+            }) => {
+                return Err(AgentError::Other(format!(
+                    "Proxy connection [{connection_id}] fail to connect destination because of reason: {reason:?}, source address: {src_address:?}, destination address: {dst_address:?}"
+                )));
             }
-            ProxyTcpPayload::InitResponse(ProxyTcpInitResponseStatus::Failure(reason)) => {
-                return Err(AgentError::Other(format!("Proxy connection [{}] fail to connect destination because of reason: {reason:?}",proxy_connection.get_connection_id())));
-            }
-            ProxyTcpPayload::InitResponse(success_obj) => success_obj,
+            ProxyTcpPayload::InitResponse(ProxyTcpInitResponseStatus::Success {
+                connection_id,
+                src_address,
+                dst_address,
+            }) => (connection_id, src_address, dst_address),
         };
 
-        match response_type {
-            ProxyTcpInitResultType::Success => {
-                debug!("Client tcp connection [{src_address}] receive init tcp loop init response: {tcp_loop_key}");
-            }
-            ProxyTcpInitResultType::Fail => {
-                error!("Client tcp connection [{src_address}] fail to do tcp loop init, tcp loop key: [{tcp_loop_key}]");
-                return Err(AgentError::InvalidProxyResponse(
-                    "Proxy tcp init fail.".to_string(),
-                ));
-            }
-            ProxyTcpInitResultType::ConnectToDstFail => {
-                error!("Client tcp connection [{src_address}] fail to do tcp loop init, because of proxy fail connect to destination, tcp loop key: [{tcp_loop_key}]");
-                return Err(AgentError::InvalidProxyResponse(
-                    "Proxy tcp init fail.".to_string(),
-                ));
-            }
-        }
+        debug!("Proxy connection [{connection_id}] success connect to: {dst_address:?} from source: {src_address:?} ");
+
         if init_data.is_none() {
             //For https proxy
             let http_connect_success_response = Response::new(
@@ -212,10 +170,7 @@ impl ClientTransportHandshake for HttpClientTransport {
                 ReasonPhrase::new(CONNECTION_ESTABLISHED).unwrap(),
                 vec![],
             );
-            http_framed
-                .send(http_connect_success_response)
-                .await
-                .map_err(EncoderError::Http)?;
+            http_framed.send(http_connect_success_response).await?;
         }
         let FramedParts {
             io: client_tcp_stream,
@@ -228,6 +183,7 @@ impl ClientTransportHandshake for HttpClientTransport {
                 dst_address,
                 proxy_connection,
                 init_data,
+                connection_id,
             }),
             Box::new(Self),
         ))

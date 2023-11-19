@@ -5,8 +5,10 @@ use serde_derive::{Deserialize, Serialize};
 
 lazy_static! {
     pub static ref AGENT_CONFIG: AgentConfig = {
-        let agent_configuration_file = read_to_string("resources/config/ppaass-agent.toml").expect("Fail to read agent configuration file.");
-        toml::from_str(&agent_configuration_file).expect("Fail to parse agent configuration file content.")
+        let agent_configuration_file = read_to_string("resources/config/ppaass-agent.toml")
+            .expect("Fail to read agent configuration file.");
+        toml::from_str(&agent_configuration_file)
+            .expect("Fail to parse agent configuration file content.")
     };
 }
 
@@ -35,12 +37,16 @@ pub struct AgentConfig {
 }
 
 impl AgentConfig {
-    pub fn get_user_token(&self) -> Option<&str> {
-        self.user_token.as_deref()
+    pub fn get_user_token(&self) -> &str {
+        self.user_token
+            .as_deref()
+            .expect("Fail to get user token from configuration file")
     }
 
-    pub fn get_proxy_addresses(&self) -> Option<&Vec<String>> {
-        self.proxy_addresses.as_ref()
+    pub fn get_proxy_addresses(&self) -> &[String] {
+        self.proxy_addresses
+            .as_deref()
+            .expect("Fail to get proxy addresses from configuration file")
     }
 
     pub fn get_ipv6(&self) -> bool {
