@@ -22,11 +22,8 @@ use log::{debug, error};
 use pin_project::pin_project;
 
 use ppaass_io::Connection;
-use ppaass_protocol::error::ProtocolError;
-use ppaass_protocol::message::{
-    AgentTcpPayload, Encryption, NetAddress, PayloadType, ProxyTcpPayload,
-    UnwrappedProxyTcpPayload, WrapperMessage,
-};
+
+use ppaass_protocol::message::{NetAddress, ProxyTcpPayload, UnwrappedProxyTcpPayload};
 use ppaass_protocol::unwrap_proxy_tcp_payload;
 use tokio::{
     io::{AsyncRead, AsyncWrite},
@@ -71,28 +68,28 @@ where
         let this = self.project();
         this.client_bytes_framed_write
             .poll_ready(cx)
-            .map_err(|e| AgentError::Io(e))
+            .map_err(AgentError::Io)
     }
 
     fn start_send(self: Pin<&mut Self>, item: BytesMut) -> Result<(), Self::Error> {
         let this = self.project();
         this.client_bytes_framed_write
             .start_send(item)
-            .map_err(|e| AgentError::Io(e))
+            .map_err(AgentError::Io)
     }
 
     fn poll_flush(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
         let this = self.project();
         this.client_bytes_framed_write
             .poll_flush(cx)
-            .map_err(|e| AgentError::Io(e))
+            .map_err(AgentError::Io)
     }
 
     fn poll_close(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
         let this = self.project();
         this.client_bytes_framed_write
             .poll_close(cx)
-            .map_err(|e| AgentError::Io(e))
+            .map_err(AgentError::Io)
     }
 }
 
@@ -131,7 +128,7 @@ where
         let this = self.project();
         this.client_bytes_framed_read
             .poll_next(cx)
-            .map_err(|e| AgentError::Io(e))
+            .map_err(AgentError::Io)
     }
 }
 
@@ -278,6 +275,10 @@ pub(crate) trait ClientTransportRelay {
                 match payload {
                     ProxyTcpPayload::InitResponse(init_response) => {
                         error!("Fail to read proxy connection [{connection_id}] because of invalid status: {init_response:?}");
+                        return;
+                    }
+                    ProxyTcpPayload::CloseRequest { connection_id } => {
+                        error!("Fail to read proxy connection [{connection_id}] because of it is closed by peer.");
                         return;
                     }
                     ProxyTcpPayload::Data {

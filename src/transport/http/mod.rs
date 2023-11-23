@@ -158,6 +158,11 @@ impl ClientTransportHandshake for HttpClientTransport {
                 src_address,
                 dst_address,
             }) => (connection_id, src_address, dst_address),
+            ProxyTcpPayload::CloseRequest { connection_id } => {
+                return Err(AgentError::Other(format!(
+                    "Proxy connection [{connection_id}] closed by peer."
+                )));
+            }
         };
 
         debug!("Proxy connection [{connection_id}] success connect to: {dst_address:?} from source: {src_address:?} ");
