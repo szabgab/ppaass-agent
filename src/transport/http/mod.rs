@@ -1,9 +1,12 @@
 pub(crate) mod codec;
 
+use std::sync::Arc;
+
 use async_trait::async_trait;
 use bytecodec::{bytes::BytesEncoder, EncodeExt};
 
 use bytes::Bytes;
+use deadpool::managed::Pool;
 use derive_more::Constructor;
 use futures::{SinkExt, StreamExt};
 use httpcodec::{BodyEncoder, HttpVersion, ReasonPhrase, RequestEncoder, Response, StatusCode};
@@ -18,8 +21,8 @@ use url::Url;
 
 use crate::{
     config::AGENT_CONFIG,
-    connection::PROXY_CONNECTION_FACTORY,
     error::AgentError,
+    pool::ProxyConnectionManager,
     transport::{
         http::codec::HttpCodec, ClientTransportDataRelayInfo, ClientTransportTcpDataRelay,
     },
@@ -37,8 +40,10 @@ const HTTP_DEFAULT_PORT: u16 = 80;
 const OK_CODE: u16 = 200;
 const CONNECTION_ESTABLISHED: &str = "Connection Established";
 
-#[derive(Debug, Constructor)]
-pub(crate) struct HttpClientTransport;
+#[derive(Constructor)]
+pub(crate) struct HttpClientTransport {
+    proxy_connection_pool: Arc<Pool<ProxyConnectionManager>>,
+}
 
 impl ClientTransportRelay for HttpClientTransport {}
 
@@ -115,7 +120,11 @@ impl ClientTransportHandshake for HttpClientTransport {
             port: target_port,
         };
         let user_token = AGENT_CONFIG.get_user_token();
-        let mut proxy_connection = PROXY_CONNECTION_FACTORY.create_connection().await?;
+        let mut proxy_connection = self.proxy_connection_pool.get().await.map_err(|e| {
+            AgentError::Other(format!(
+                "Fail to get proxy connection because of error: {e:?}"
+            ))
+        })?;
         debug!(
             "Client tcp connection [{src_address}] take proxy connection [{}] to do proxy",
             proxy_connection.get_connection_id()
@@ -137,35 +146,35 @@ impl ClientTransportHandshake for HttpClientTransport {
                 )))??;
         let UnwrappedProxyTcpPayload { payload, .. } =
             unwrap_proxy_tcp_payload(proxy_wrapper_message)?;
-        let (connection_id, src_address, dst_address) = match payload {
-            ProxyTcpPayload::Data { connection_id, .. } => {
+        let (tunnel_id, src_address, dst_address) = match payload {
+            ProxyTcpPayload::Data { tunnel_id, .. } => {
                 return Err(AgentError::Other(format!(
-                    "Proxy connection [{connection_id}] fail to connect destination because of invalid status"
+                    "Proxy connection [{tunnel_id}] fail to connect destination because of invalid status"
                 )));
             }
             ProxyTcpPayload::InitResponse(ProxyTcpInitResponseStatus::Failure {
-                connection_id,
+                tunnel_id,
                 src_address,
                 dst_address,
                 reason,
             }) => {
                 return Err(AgentError::Other(format!(
-                    "Proxy connection [{connection_id}] fail to connect destination because of reason: {reason:?}, source address: {src_address:?}, destination address: {dst_address:?}"
+                    "Proxy connection [{tunnel_id}] fail to connect destination because of reason: {reason:?}, source address: {src_address:?}, destination address: {dst_address:?}"
                 )));
             }
             ProxyTcpPayload::InitResponse(ProxyTcpInitResponseStatus::Success {
-                connection_id,
+                tunnel_id,
                 src_address,
                 dst_address,
-            }) => (connection_id, src_address, dst_address),
-            ProxyTcpPayload::CloseRequest { connection_id } => {
+            }) => (tunnel_id, src_address, dst_address),
+            ProxyTcpPayload::CloseRequest { tunnel_id } => {
                 return Err(AgentError::Other(format!(
-                    "Proxy connection [{connection_id}] closed by peer."
+                    "Proxy connection [{tunnel_id}] closed by peer."
                 )));
             }
         };
 
-        debug!("Proxy connection [{connection_id}] success connect to: {dst_address:?} from source: {src_address:?} ");
+        debug!("Proxy connection [{tunnel_id}] success connect to: {dst_address:?} from source: {src_address:?} ");
 
         if init_data.is_none() {
             //For https proxy
@@ -188,9 +197,11 @@ impl ClientTransportHandshake for HttpClientTransport {
                 dst_address,
                 proxy_connection,
                 init_data,
-                connection_id,
+                tunnel_id,
             }),
-            Box::new(Self),
+            Box::new(Self {
+                proxy_connection_pool: self.proxy_connection_pool.clone(),
+            }),
         ))
     }
 }

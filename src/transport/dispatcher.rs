@@ -1,6 +1,7 @@
-use std::{mem::size_of, net::SocketAddr};
+use std::{mem::size_of, net::SocketAddr, sync::Arc};
 
 use bytes::BytesMut;
+use deadpool::managed::Pool;
 use futures::StreamExt;
 use log::{debug, error};
 
@@ -8,7 +9,10 @@ use ppaass_protocol::message::NetAddress;
 use tokio::net::TcpStream;
 use tokio_util::codec::{Decoder, Framed, FramedParts};
 
-use crate::{config::AGENT_CONFIG, error::AgentError, transport::http::HttpClientTransport};
+use crate::{
+    config::AGENT_CONFIG, error::AgentError, pool::ProxyConnectionManager,
+    transport::http::HttpClientTransport,
+};
 
 use super::ClientTransportHandshake;
 
@@ -54,6 +58,7 @@ impl ClientTransportDispatcher {
     pub(crate) async fn dispatch(
         client_tcp_stream: TcpStream,
         client_socket_address: SocketAddr,
+        proxy_connection_pool: Arc<Pool<ProxyConnectionManager>>,
     ) -> Result<
         (
             ClientTransportHandshakeInfo,
@@ -104,7 +109,7 @@ impl ClientTransportDispatcher {
                         src_address: client_socket_address.into(),
                         initial_buf,
                     },
-                    Box::new(HttpClientTransport),
+                    Box::new(HttpClientTransport::new(proxy_connection_pool)),
                 ))
             }
         }

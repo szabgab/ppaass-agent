@@ -3,9 +3,9 @@ use std::sync::{Arc, OnceLock};
 use crypto::AgentServerRsaCryptoFetcher;
 
 pub mod config;
-pub(crate) mod connection;
 pub mod crypto;
 pub mod error;
+pub(crate) mod pool;
 pub mod server;
 pub(crate) mod transport;
 

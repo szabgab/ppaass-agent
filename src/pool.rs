@@ -1,29 +1,21 @@
-use std::{fmt::Debug, str::FromStr, sync::Arc};
-use std::{net::SocketAddr, time::Duration};
+use std::{net::SocketAddr, str::FromStr, sync::Arc, time::Duration};
 
-use lazy_static::lazy_static;
+use deadpool::managed::{self, Manager};
+use log::{debug, error};
 use ppaass_io::Connection;
 use tokio::{net::TcpStream, time::timeout};
-
-use log::{debug, error};
 
 use crate::{
     config::AGENT_CONFIG, crypto::AgentServerRsaCryptoFetcher, error::AgentError,
     RSA_CRYPTO_FETCHER,
 };
 
-lazy_static! {
-    pub(crate) static ref PROXY_CONNECTION_FACTORY: ProxyConnectionFactory =
-        ProxyConnectionFactory::new().expect("Fail to initialize proxy connection pool.");
-}
-
-#[derive(Debug)]
-pub(crate) struct ProxyConnectionFactory {
+pub(crate) struct ProxyConnectionManager {
     proxy_addresses: Vec<SocketAddr>,
 }
 
-impl ProxyConnectionFactory {
-    pub(crate) fn new() -> Result<Self, AgentError> {
+impl ProxyConnectionManager {
+    pub fn new() -> Result<Self, AgentError> {
         let proxy_addresses_configuration = AGENT_CONFIG.get_proxy_addresses();
         let proxy_addresses: Vec<SocketAddr> = proxy_addresses_configuration
             .iter()
@@ -35,10 +27,14 @@ impl ProxyConnectionFactory {
         }
         Ok(Self { proxy_addresses })
     }
+}
 
-    pub(crate) async fn create_connection<'r>(
-        &self,
-    ) -> Result<Connection<TcpStream, Arc<AgentServerRsaCryptoFetcher>>, AgentError> {
+#[async_trait::async_trait]
+impl Manager for ProxyConnectionManager {
+    type Type = Connection<TcpStream, Arc<AgentServerRsaCryptoFetcher>>;
+    type Error = AgentError;
+
+    async fn create(&self) -> Result<Self::Type, Self::Error> {
         debug!("Take proxy connection from pool.");
         let proxy_tcp_stream = match timeout(
             Duration::from_secs(AGENT_CONFIG.get_connect_to_proxy_timeout()),
@@ -70,5 +66,13 @@ impl ProxyConnectionFactory {
             AGENT_CONFIG.get_proxy_send_buffer_size(),
         );
         Ok(proxy_connection)
+    }
+
+    async fn recycle(
+        &self,
+        _: &mut Self::Type,
+        _: &managed::Metrics,
+    ) -> managed::RecycleResult<AgentError> {
+        Ok(())
     }
 }
