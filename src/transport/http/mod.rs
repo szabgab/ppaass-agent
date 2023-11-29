@@ -6,7 +6,6 @@ use async_trait::async_trait;
 use bytecodec::{bytes::BytesEncoder, EncodeExt};
 
 use bytes::Bytes;
-use deadpool::managed::Pool;
 use derive_more::Constructor;
 use futures::{SinkExt, StreamExt};
 use httpcodec::{BodyEncoder, HttpVersion, ReasonPhrase, RequestEncoder, Response, StatusCode};
@@ -22,7 +21,7 @@ use url::Url;
 use crate::{
     config::AGENT_CONFIG,
     error::AgentError,
-    pool::ProxyConnectionManager,
+    pool::ProxyConnectionHandler,
     transport::{
         http::codec::HttpCodec, ClientTransportDataRelayInfo, ClientTransportTcpDataRelay,
     },
@@ -42,7 +41,7 @@ const CONNECTION_ESTABLISHED: &str = "Connection Established";
 
 #[derive(Constructor)]
 pub(crate) struct HttpClientTransport {
-    proxy_connection_pool: Arc<Pool<ProxyConnectionManager>>,
+    proxy_connection_pool: Arc<ProxyConnectionHandler>,
 }
 
 impl ClientTransportRelay for HttpClientTransport {}
@@ -120,21 +119,32 @@ impl ClientTransportHandshake for HttpClientTransport {
             port: target_port,
         };
         let user_token = AGENT_CONFIG.get_user_token();
-        let mut proxy_connection = self.proxy_connection_pool.get().await.map_err(|e| {
-            AgentError::Other(format!(
-                "Fail to get proxy connection because of error: {e:?}"
-            ))
-        })?;
+        let mut proxy_connection = self
+            .proxy_connection_pool
+            .fetch_proxy_connection_output_sender()
+            .await
+            .map_err(|e| {
+                AgentError::Other(format!(
+                    "Fail to get proxy connection because of error: {e:?}"
+                ))
+            })?;
         debug!(
             "Client tcp connection [{src_address}] take proxy connection [{}] to do proxy",
-            proxy_connection.get_connection_id()
+            proxy_connection.key
         );
         let agent_tcp_init_request = ppaass_protocol::new_agent_tcp_init_request(
             user_token.to_string(),
             src_address,
             dst_address,
         )?;
-        proxy_connection.send(agent_tcp_init_request).await?;
+        proxy_connection
+            .proxy_outbound_tx
+            .send(agent_tcp_init_request)
+            .map_err(|e| {
+                AgentError::Other(format!(
+                    "Fail to send agent tcp init request to proxy because of error: {e:?}"
+                ))
+            })?;
 
         let proxy_wrapper_message =
             proxy_connection
@@ -142,7 +152,7 @@ impl ClientTransportHandshake for HttpClientTransport {
                 .await
                 .ok_or(AgentError::Other(format!(
                     "Proxy connection [{}] exhausted.",
-                    proxy_connection.get_connection_id()
+                    proxy_connection.key
                 )))??;
         let UnwrappedProxyTcpPayload { payload, .. } =
             unwrap_proxy_tcp_payload(proxy_wrapper_message)?;

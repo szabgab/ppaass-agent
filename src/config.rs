@@ -27,6 +27,7 @@ pub struct AgentConfig {
     worker_thread_number: Option<usize>,
     /// Whether enable compressing
     compress: Option<bool>,
+    proxy_connection_number: Option<usize>,
     /// The proxy addresses
     proxy_addresses: Option<Vec<String>>,
     client_receive_buffer_size: Option<usize>,
@@ -37,6 +38,10 @@ pub struct AgentConfig {
 }
 
 impl AgentConfig {
+    pub fn get_proxy_connection_number(&self) -> usize {
+        self.proxy_connection_number.unwrap_or(32)
+    }
+
     pub fn get_user_token(&self) -> &str {
         self.user_token
             .as_deref()
