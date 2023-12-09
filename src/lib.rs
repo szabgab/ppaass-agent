@@ -4,8 +4,9 @@ use crypto::AgentServerRsaCryptoFetcher;
 
 pub mod config;
 pub mod crypto;
+pub(crate) mod edge;
 pub mod error;
-pub(crate) mod pool;
+pub(crate) mod handler;
 pub mod server;
 pub(crate) mod transport;
 

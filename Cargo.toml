@@ -15,7 +15,7 @@ path = "src/bin/bin.rs"
 
 [dependencies]
 ppaass-protocol={git = "https://github.com/quhxuxm/ppaass-protocol.git", branch = "main"}
-ppaass-io={git = "https://github.com/quhxuxm/ppaass-io.git", branch = "main"}
+ppaass-codec={git = "https://github.com/quhxuxm/ppaass-codec.git", branch = "main"}
 ppaass-crypto={git = "https://github.com/quhxuxm/ppaass-crypto.git", branch = "main"}
 anyhow = "1.0"
 async-trait = "0.1"

@@ -10,7 +10,7 @@ use std::{
 use self::dispatcher::ClientTransportHandshakeInfo;
 use crate::{
     config::AGENT_CONFIG, crypto::AgentServerRsaCryptoFetcher, error::AgentError,
-    pool::ProxyConnectionManager,
+    handler::ProxyConnectionManager,
 };
 
 use async_trait::async_trait;

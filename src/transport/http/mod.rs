@@ -21,7 +21,7 @@ use url::Url;
 use crate::{
     config::AGENT_CONFIG,
     error::AgentError,
-    pool::ProxyConnectionHandler,
+    handler::ProxyConnectionHandler,
     transport::{
         http::codec::HttpCodec, ClientTransportDataRelayInfo, ClientTransportTcpDataRelay,
     },

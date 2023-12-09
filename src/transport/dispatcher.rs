@@ -10,7 +10,7 @@ use tokio::net::TcpStream;
 use tokio_util::codec::{Decoder, Framed, FramedParts};
 
 use crate::{
-    config::AGENT_CONFIG, error::AgentError, pool::ProxyConnectionManager,
+    config::AGENT_CONFIG, error::AgentError, handler::ProxyConnectionManager,
     transport::http::HttpClientTransport,
 };
 

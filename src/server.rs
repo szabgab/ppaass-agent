@@ -3,8 +3,7 @@ use std::{net::SocketAddr, sync::Arc};
 use crate::error::AgentError;
 use crate::transport::dispatcher::ClientTransportDispatcher;
 use crate::transport::ClientTransportDataRelayInfo;
-use crate::{config::AGENT_CONFIG, pool::ProxyConnectionManager};
-use deadpool::managed::Pool;
+use crate::{config::AGENT_CONFIG, handler::ProxyConnectionManager};
 use log::{debug, error, info};
 use tokio::net::{TcpListener, TcpStream};
 

@@ -1,4 +1,4 @@
-use ppaass_io::{DecoderError, EncoderError};
+use ppaass_codec::error::{DecoderError, EncoderError};
 use ppaass_protocol::error::ProtocolError;
 use std::io::Error as StdIoError;
 use thiserror::Error;
@@ -10,14 +10,15 @@ pub enum AgentError {
     #[error("I/O error happen: {0:?}")]
     Io(#[from] StdIoError),
     #[error("Proxy decoder error happen: {0:?}")]
-    DecoderProxy(#[from] DecoderError),
+    DecoderProxyEdge(#[from] DecoderError),
     #[error("Proxy encoder error happen: {0:?}")]
-    EncoderProxy(#[from] EncoderError),
+    EncoderProxyEdge(#[from] EncoderError),
 
-    // #[error("Client decoder error happen: {0:?}")]
-    // DecoderClient(#[from] DecoderError),
-    // #[error("Client encoder error happen: {0:?}")]
-    // EncoderClient(#[from] EncoderError),
+    #[error("Proxy decoder error happen: {0:?}")]
+    DecoderClient(String),
+    #[error("Proxy encoder error happen: {0:?}")]
+    EncoderClient(String),
+
     #[error("Protocol error happen: {0:?}")]
     Protocol(#[from] ProtocolError),
     #[error("Other error happen: {0}")]
