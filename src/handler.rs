@@ -23,21 +23,20 @@ use crate::{
     RSA_CRYPTO_FETCHER,
 };
 
-pub(crate) struct AgentEdgeTx {
+struct ProxyEdgeWriteTx {
     usage: Mutex<usize>,
-    pub agent_edge_id: String,
-    pub agent_edge_write_tx: UnboundedSender<AgentMessage>,
+    proxy_edge_id: String,
+    proxy_edge_write_tx: UnboundedSender<AgentMessage>,
 }
 
-pub(crate) struct AgentEdgeHandler {
-    agent_edge_repo: Arc<Mutex<HashMap<String, Arc<AgentEdgeTx>>>>,
-    agent_edge_repo_notify: Arc<Notify>,
+pub(crate) struct ProxyEdgeHandler {
+    proxy_edge_write_tx_repo: Arc<Mutex<HashMap<String, Arc<ProxyEdgeWriteTx>>>>,
+    proxy_edge_write_tx_repo_notify: Arc<Notify>,
     proxy_edge_read_tx_repo: Arc<Mutex<HashMap<String, UnboundedSender<ProxyMessage>>>>,
-    proxy_edge_write_tx_repo: Arc<Mutex<HashMap<String, UnboundedSender<ProxyMessage>>>>,
 }
 
-impl AgentEdgeHandler {
-    pub async fn new() -> Result<AgentEdgeHandler, AgentError> {
+impl ProxyEdgeHandler {
+    pub async fn new() -> Result<Self, AgentError> {
         let proxy_addresses_configuration = AGENT_CONFIG.get_proxy_addresses();
         let proxy_addresses: Vec<SocketAddr> = proxy_addresses_configuration
             .iter()
@@ -48,82 +47,85 @@ impl AgentEdgeHandler {
             panic!("No available proxy address for runtime to use.")
         }
         let configured_proxy_connection_number = AGENT_CONFIG.get_proxy_connection_number();
-        let agent_edge_repo = Arc::new(Mutex::new(Default::default()));
-        let agent_edge_repo_notify = Arc::new(Notify::new());
-        let agent_edge_handler = AgentEdgeHandler {
-            agent_edge_repo: agent_edge_repo.clone(),
-            agent_edge_repo_notify: agent_edge_repo_notify.clone(),
+        let proxy_edge_write_tx_repo = Arc::new(Mutex::new(Default::default()));
+        let proxy_edge_write_tx_repo_notify = Arc::new(Notify::new());
+        let proxy_edge_handler = Self {
+            proxy_edge_write_tx_repo: proxy_edge_write_tx_repo.clone(),
+            proxy_edge_write_tx_repo_notify: proxy_edge_write_tx_repo_notify.clone(),
             proxy_edge_read_tx_repo: Default::default(),
-            proxy_edge_write_tx_repo: Default::default(),
         };
         for _ in 0..configured_proxy_connection_number {
-            Self::start_agent_edge(
+            Self::start_proxy_edge(
                 &proxy_addresses,
-                agent_edge_repo.clone(),
-                agent_edge_repo_notify.clone(),
+                proxy_edge_write_tx_repo.clone(),
+                proxy_edge_write_tx_repo_notify.clone(),
+                proxy_edge_handler.proxy_edge_read_tx_repo.clone(),
             )
             .await?;
         }
 
+        let proxy_edge_read_tx_repo = proxy_edge_handler.proxy_edge_read_tx_repo.clone();
+
         tokio::spawn(async move {
             loop {
-                agent_edge_repo_notify.notified().await;
-                let agent_edge_number_to_refresh = {
-                    let agent_edge_repo = agent_edge_repo.lock().await;
-                    let agent_edge_number_to_refresh =
-                        configured_proxy_connection_number - agent_edge_repo.len();
-                    agent_edge_number_to_refresh
+                proxy_edge_write_tx_repo_notify.notified().await;
+                let proxy_edge_number_to_refresh = {
+                    let proxy_edge_write_tx_repo = proxy_edge_write_tx_repo.lock().await;
+                    let proxy_edge_number_to_refresh =
+                        configured_proxy_connection_number - proxy_edge_write_tx_repo.len();
+                    proxy_edge_number_to_refresh
                 };
-                for _ in 0..agent_edge_number_to_refresh {
-                    if let Err(e) = Self::start_agent_edge(
+                for _ in 0..proxy_edge_number_to_refresh {
+                    if let Err(e) = Self::start_proxy_edge(
                         &proxy_addresses,
-                        agent_edge_repo.clone(),
-                        agent_edge_repo_notify.clone(),
+                        proxy_edge_write_tx_repo.clone(),
+                        proxy_edge_write_tx_repo_notify.clone(),
+                        proxy_edge_read_tx_repo.clone(),
                     )
                     .await
                     {
-                        error!("Fail to  refresh proxy connection because of error: {e:?}");
-                        agent_edge_repo_notify.notify_waiters();
+                        error!("Fail to  refresh proxy edge because of error: {e:?}");
+                        proxy_edge_write_tx_repo_notify.notify_waiters();
                     }
                 }
             }
         });
 
-        Ok(agent_edge_handler)
+        Ok(proxy_edge_handler)
     }
 
     /// Initialize the proxy connection, start the backgroud task for each proxy connection
-    async fn start_agent_edge(
+    async fn start_proxy_edge(
         proxy_addresses: &[SocketAddr],
-        agent_edge_repo: Arc<Mutex<HashMap<String, Arc<AgentEdgeTx>>>>,
-        agent_edge_repo_notify: Arc<Notify>,
+        proxy_edge_write_tx_repo: Arc<Mutex<HashMap<String, Arc<ProxyEdgeWriteTx>>>>,
+        proxy_edge_write_tx_repo_notify: Arc<Notify>,
         proxy_edge_read_tx_repo: Arc<Mutex<HashMap<String, UnboundedSender<ProxyMessage>>>>,
-        proxy_edge_write_tx_repo: Arc<Mutex<HashMap<String, UnboundedSender<ProxyMessage>>>>,
     ) -> Result<(), AgentError> {
         let proxy_edge = Self::create_proxy_edge(proxy_addresses).await?;
-        let (mut agent_edge_write, mut agent_edge_read) = proxy_edge.split();
-        let (agent_edge_write_tx, mut agent_edge_write_rx) = unbounded_channel::<AgentMessage>();
-        let agent_edge_tx = Arc::new(AgentEdgeTx {
-            agent_edge_id: Uuid::new_v4().to_string(),
+        let (mut proxy_edge_write, mut proxy_edge_read) = proxy_edge.split();
+        let (proxy_edge_write_tx, mut proxy_edge_write_rx) = unbounded_channel::<AgentMessage>();
+        let proxy_edge_id = Uuid::new_v4().to_string();
+        let proxy_edge_write_tx = Arc::new(ProxyEdgeWriteTx {
+            proxy_edge_id,
             usage: Mutex::new(0),
-            agent_edge_write_tx,
+            proxy_edge_write_tx,
         });
-        let agent_edge_id = agent_edge_tx.agent_edge_id.clone();
-        agent_edge_repo
+        let proxy_edge_id = proxy_edge_id.clone();
+        proxy_edge_write_tx_repo
             .lock()
             .await
-            .insert(agent_edge_id.clone(), agent_edge_tx);
+            .insert(proxy_edge_id.clone(), proxy_edge_write_tx);
         {
-            let agent_edge_repo = agent_edge_repo.clone();
-            let agent_edge_id = agent_edge_id.clone();
-            let agent_edge_repo_notify = agent_edge_repo_notify.clone();
+            let proxy_edge_write_tx_repo = proxy_edge_write_tx_repo.clone();
+            let proxy_edge_id = proxy_edge_id.clone();
+            let proxy_edge_write_tx_repo_notify = proxy_edge_write_tx_repo_notify.clone();
             tokio::spawn(async move {
-                while let Some(agent_message) = agent_edge_write_rx.recv().await {
-                    if let Err(e) = agent_edge_write.send(agent_message).await {
-                        error!("Agent edge [{agent_edge_id}] fail to send agent message to proxy because of error, remove it from the agent edge repository: {e:?}");
-                        let mut agent_edge_repo = agent_edge_repo.lock().await;
-                        agent_edge_repo.remove(&agent_edge_id);
-                        agent_edge_repo_notify.notify_waiters();
+                while let Some(agent_message) = proxy_edge_write_rx.recv().await {
+                    if let Err(e) = proxy_edge_write.send(agent_message).await {
+                        error!("Proxy edge [{proxy_edge_id}] fail to send agent message to proxy because of error, remove it from the proxy edge repository: {e:?}");
+                        let mut proxy_edge_write_tx_repo = proxy_edge_write_tx_repo.lock().await;
+                        proxy_edge_write_tx_repo.remove(&proxy_edge_id);
+                        proxy_edge_write_tx_repo_notify.notify_waiters();
                         break;
                     };
                 }
@@ -132,9 +134,9 @@ impl AgentEdgeHandler {
 
         tokio::spawn(async move {
             loop {
-                let proxy_message = match agent_edge_read.next().await {
+                let proxy_message = match proxy_edge_read.next().await {
                     None => {
-                        debug!("Agent edge [{agent_edge_id}] closed by remote, remove it from the connection repository.");
+                        debug!("Proxy edge [{proxy_edge_id}] closed by remote, remove it from the connection repository.");
                         let mut agent_edge_repo = agent_edge_repo.lock().await;
                         agent_edge_repo.remove(&agent_edge_id);
                         agent_edge_repo_notify.notify_waiters();
