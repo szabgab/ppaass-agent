@@ -1,26 +1,21 @@
 mod codec;
 mod message;
 
-use std::net::{SocketAddr, SocketAddrV4, ToSocketAddrs};
+use std::net::SocketAddr;
 
 use futures::{SinkExt, StreamExt};
 
-use log::{debug, error, info};
-use ppaass_protocol::message::agent::{
-    AgentMessage, AgentMessagePayload, InitTunnelCommand, RelayData,
-};
+use log::{debug, error};
+use ppaass_protocol::message::agent::{AgentMessage, AgentMessagePayload, InitTunnelCommand};
 use ppaass_protocol::message::proxy::{InitTunnelResult, ProxyMessage, ProxyMessagePayload};
 use ppaass_protocol::values::address::UnifiedNetAddress;
 use ppaass_protocol::values::security::{Encryption, SecureInfo};
 
-use tokio::{
-    io::AsyncReadExt,
-    net::{TcpStream, UdpSocket},
-};
+use tokio::{io::AsyncReadExt, net::TcpStream};
 use tokio_util::codec::{Framed, FramedParts};
 use uuid::Uuid;
 
-use self::message::{Socks5InitCommandResultStatus, Socks5UdpDataPacket};
+use self::message::Socks5InitCommandResultStatus;
 
 use crate::{
     config::AGENT_CONFIG,
@@ -40,9 +35,7 @@ use crate::{
 
 use crate::util::random_32_bytes;
 
-use super::{
-    dispatcher::ClientTransportHandshakeInfo, ClientTransportRelay, ClientTransportUdpDataRelay,
-};
+use super::dispatcher::ClientTransportHandshakeInfo;
 
 pub(crate) struct Socks5ClientTransport;
 

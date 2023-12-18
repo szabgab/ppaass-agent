@@ -6,7 +6,6 @@ use crate::config::AGENT_CONFIG;
 use std::{
     pin::Pin,
     task::{Context, Poll},
-    time::Duration,
 };
 
 use bytes::{Bytes, BytesMut};
@@ -33,7 +32,7 @@ use tokio::{
     io::{AsyncRead, AsyncWrite},
     net::{TcpStream, UdpSocket},
 };
-use tokio_stream::StreamExt as TokioStreamExt;
+
 use tokio_util::codec::{BytesCodec, Framed};
 use uuid::Uuid;
 
@@ -215,18 +214,13 @@ impl ClientTransportRelay {
         mut client_io_write: ClientConnectionWrite<TcpStream>,
     ) {
         loop {
-            let mut proxy_connection_read = proxy_connection_read
-                .timeout(Duration::from_secs(AGENT_CONFIG.get_proxy_relay_timeout()));
-            let proxy_message = match proxy_connection_read.try_next().await {
-                Ok(Some(Ok(proxy_message))) => proxy_message,
-                Ok(Some(Err(e))) => {
+            let proxy_message = match proxy_connection_read.next().await {
+                Some(Ok(proxy_message)) => proxy_message,
+                Some(Err(e)) => {
                     error!("Fail to read data from proxy because of error: {e:?}");
                     return;
                 }
-                Ok(None) => {
-                    return;
-                }
-                Err(_) => {
+                None => {
                     return;
                 }
             };
@@ -263,7 +257,7 @@ impl ClientTransportRelay {
             Framed<TcpStream, ProxyConnectionCodec>,
             AgentMessage,
         >,
-        client_connection_read: ClientConnectionRead<TcpStream>,
+        mut client_connection_read: ClientConnectionRead<TcpStream>,
         user_token: String,
         agent_edge_id: String,
         proxy_edge_id: String,
@@ -286,20 +280,16 @@ impl ClientTransportRelay {
                     data: init_data,
                 }),
             };
-            proxy_connection_write
-                .send(agent_relay_data_message)
-                .await?;
+            if let Err(e) = proxy_connection_write.send(agent_relay_data_message).await {
+                error!("Fail to relay init data from agent to proxy because of error: {e:?}");
+                return;
+            };
         }
         loop {
-            let mut client_connection_read = client_connection_read
-                .timeout(Duration::from_secs(AGENT_CONFIG.get_client_relay_timeout()));
-            let client_data = match client_connection_read.try_next().await {
-                Ok(None) => return,
-                Ok(Some(Ok(data))) => data.freeze(),
-                Ok(Some(Err(e))) => {
-                    return;
-                }
-                Err(e) => {
+            let client_data = match client_connection_read.next().await {
+                None => return,
+                Some(Ok(data)) => data.freeze(),
+                Some(Err(e)) => {
                     return;
                 }
             };

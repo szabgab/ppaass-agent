@@ -1,23 +1,16 @@
 pub(crate) mod codec;
 
-use anyhow::anyhow;
-use async_trait::async_trait;
 use bytecodec::{bytes::BytesEncoder, EncodeExt};
 
 use bytes::Bytes;
 use futures::{SinkExt, StreamExt};
 use httpcodec::{BodyEncoder, HttpVersion, ReasonPhrase, RequestEncoder, Response, StatusCode};
-use log::{debug, error};
+use log::debug;
 use ppaass_protocol::message::agent::{AgentMessage, AgentMessagePayload, InitTunnelCommand};
 use ppaass_protocol::message::proxy::{InitTunnelResult, ProxyMessage, ProxyMessagePayload};
 use ppaass_protocol::values::address::UnifiedNetAddress;
 use ppaass_protocol::values::security::{Encryption, SecureInfo};
 
-use tokio_util::codec::{Framed, FramedParts};
-use url::Url;
-use uuid::Uuid;
-
-use crate::transport::ClientTransportRelay;
 use crate::util::random_32_bytes;
 use crate::{
     config::AGENT_CONFIG,
@@ -27,6 +20,9 @@ use crate::{
         http::codec::HttpCodec, ClientTransportDataRelayInfo, ClientTransportTcpDataRelay,
     },
 };
+use tokio_util::codec::{Framed, FramedParts};
+use url::Url;
+use uuid::Uuid;
 
 use super::dispatcher::ClientTransportHandshakeInfo;
 

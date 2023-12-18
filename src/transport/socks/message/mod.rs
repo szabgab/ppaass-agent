@@ -14,7 +14,6 @@ mod udp;
 
 pub(crate) use auth::*;
 pub(crate) use init::*;
-pub(crate) use udp::*;
 
 use crate::error::AgentError;
 

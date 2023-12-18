@@ -1,6 +1,6 @@
 use std::{mem::size_of, net::SocketAddr};
 
-use bytes::{Buf, BytesMut};
+use bytes::BytesMut;
 use futures::StreamExt;
 use log::{debug, error};
 use ppaass_protocol::values::address::UnifiedNetAddress;
