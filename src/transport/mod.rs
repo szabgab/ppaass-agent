@@ -1,48 +1,48 @@
 pub(crate) mod dispatcher;
 mod http;
+mod socks;
 
+use crate::config::AGENT_CONFIG;
 use std::{
     pin::Pin,
-    sync::Arc,
     task::{Context, Poll},
+    time::Duration,
 };
 
-use self::dispatcher::ClientTransportHandshakeInfo;
-use crate::{
-    config::AGENT_CONFIG, crypto::AgentServerRsaCryptoFetcher, error::AgentError,
-    handler::ProxyConnectionManager,
-};
-
-use async_trait::async_trait;
 use bytes::{Bytes, BytesMut};
-use deadpool::managed::Object;
-use futures::StreamExt;
+use futures::StreamExt as FuturesStreamExt;
 use futures::{
     stream::{SplitSink, SplitStream},
     Sink, SinkExt, Stream,
 };
+use log::error;
 
-use log::{debug, error};
 use pin_project::pin_project;
+use ppaass_protocol::message::agent::{
+    AgentMessage, AgentMessagePayload, RelayData as AgentRelayData,
+};
+use ppaass_protocol::message::proxy::RelayData as ProxyRelayData;
+use ppaass_protocol::message::proxy::{ProxyMessage, ProxyMessagePayload};
+use ppaass_protocol::values::address::UnifiedNetAddress;
+use ppaass_protocol::values::security::{Encryption, SecureInfo};
 
-use ppaass_io::Connection;
-
-use ppaass_protocol::message::{NetAddress, ProxyTcpPayload, UnwrappedProxyTcpPayload};
-use ppaass_protocol::unwrap_proxy_tcp_payload;
+use crate::codec::ProxyConnectionCodec;
+use crate::error::AgentError;
+use crate::util::random_32_bytes;
 use tokio::{
     io::{AsyncRead, AsyncWrite},
     net::{TcpStream, UdpSocket},
-    sync::Mutex,
 };
-
+use tokio_stream::StreamExt as TokioStreamExt;
 use tokio_util::codec::{BytesCodec, Framed};
+use uuid::Uuid;
 
 #[pin_project]
 struct ClientConnectionWrite<T>
 where
     T: AsyncRead + AsyncWrite + Send + Sync + Unpin + 'static,
 {
-    src_address: NetAddress,
+    src_address: UnifiedNetAddress,
 
     #[pin]
     client_bytes_framed_write: SplitSink<Framed<T, BytesCodec>, BytesMut>,
@@ -53,7 +53,7 @@ where
     T: AsyncRead + AsyncWrite + Send + Sync + Unpin + 'static,
 {
     fn new(
-        src_address: NetAddress,
+        src_address: UnifiedNetAddress,
         client_bytes_framed_write: SplitSink<Framed<T, BytesCodec>, BytesMut>,
     ) -> Self {
         Self {
@@ -73,28 +73,28 @@ where
         let this = self.project();
         this.client_bytes_framed_write
             .poll_ready(cx)
-            .map_err(AgentError::Io)
+            .map_err(crate::error::AgentError::GeneralIo)
     }
 
     fn start_send(self: Pin<&mut Self>, item: BytesMut) -> Result<(), Self::Error> {
         let this = self.project();
         this.client_bytes_framed_write
             .start_send(item)
-            .map_err(AgentError::Io)
+            .map_err(crate::error::AgentError::GeneralIo)
     }
 
     fn poll_flush(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
         let this = self.project();
         this.client_bytes_framed_write
             .poll_flush(cx)
-            .map_err(AgentError::Io)
+            .map_err(crate::error::AgentError::GeneralIo)
     }
 
     fn poll_close(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
         let this = self.project();
         this.client_bytes_framed_write
             .poll_close(cx)
-            .map_err(AgentError::Io)
+            .map_err(crate::error::AgentError::GeneralIo)
     }
 }
 
@@ -103,7 +103,7 @@ struct ClientConnectionRead<T>
 where
     T: AsyncRead + AsyncWrite + Send + Sync + Unpin + 'static,
 {
-    src_address: NetAddress,
+    src_address: UnifiedNetAddress,
     #[pin]
     client_bytes_framed_read: SplitStream<Framed<T, BytesCodec>>,
 }
@@ -113,7 +113,7 @@ where
     T: AsyncRead + AsyncWrite + Send + Sync + Unpin + 'static,
 {
     fn new(
-        src_address: NetAddress,
+        src_address: UnifiedNetAddress,
         client_bytes_framed_read: SplitStream<Framed<T, BytesCodec>>,
     ) -> Self {
         Self {
@@ -133,7 +133,7 @@ where
         let this = self.project();
         this.client_bytes_framed_read
             .poll_next(cx)
-            .map_err(AgentError::Io)
+            .map_err(crate::error::AgentError::GeneralIo)
     }
 }
 
@@ -145,165 +145,181 @@ pub(crate) enum ClientTransportDataRelayInfo {
 #[non_exhaustive]
 pub(crate) struct ClientTransportTcpDataRelay {
     client_tcp_stream: TcpStream,
-    src_address: NetAddress,
-    dst_address: NetAddress,
-    proxy_connection: Object<ProxyConnectionManager>,
+    src_address: UnifiedNetAddress,
+    dst_address: UnifiedNetAddress,
+    proxy_connection: Framed<TcpStream, ProxyConnectionCodec>,
     init_data: Option<Bytes>,
-    tunnel_id: String,
+    agent_edge_id: String,
+    proxy_edge_id: String,
 }
 
 #[non_exhaustive]
 pub(crate) struct ClientTransportUdpDataRelay {
     client_tcp_stream: TcpStream,
     agent_udp_bind_socket: UdpSocket,
-    client_udp_restrict_address: NetAddress,
+    client_udp_restrict_address: UnifiedNetAddress,
+    agent_edge_id: String,
+    proxy_edge_id: String,
 }
 
-#[async_trait]
-pub(crate) trait ClientTransportHandshake {
-    async fn handshake(
-        &self,
-        handshake_info: ClientTransportHandshakeInfo,
-    ) -> Result<
-        (
-            ClientTransportDataRelayInfo,
-            Box<dyn ClientTransportRelay + Send + Sync>,
-        ),
-        AgentError,
-    >;
-}
+pub(crate) struct ClientTransportRelay {}
 
-#[async_trait]
-pub(crate) trait ClientTransportRelay {
-    async fn udp_relay(
-        &self,
-        _udp_relay_info: ClientTransportUdpDataRelay,
-    ) -> Result<(), AgentError> {
-        Ok(())
-    }
-
-    async fn tcp_relay(
-        &self,
+impl ClientTransportRelay {
+    pub(crate) async fn tcp_relay(
         tcp_relay_info: ClientTransportTcpDataRelay,
     ) -> Result<(), AgentError> {
-        let user_token = AGENT_CONFIG.get_user_token();
+        let user_token = AGENT_CONFIG
+            .get_user_token()
+            .ok_or(AgentError::Other("User token not configured.".to_string()))?;
         let ClientTransportTcpDataRelay {
             client_tcp_stream,
             src_address,
             dst_address,
             mut proxy_connection,
             init_data,
-            tunnel_id,
+            agent_edge_id,
+            proxy_edge_id,
         } = tcp_relay_info;
-
-        debug!("Begin to relay data to proxy connection [{tunnel_id}], source address: {src_address:?}, destination address: {dst_address:?}");
-
         let client_io_framed = Framed::with_capacity(
             client_tcp_stream,
             BytesCodec::new(),
             AGENT_CONFIG.get_client_receive_buffer_size(),
         );
         let (client_io_write, client_io_read) = client_io_framed.split::<BytesMut>();
-        let (mut client_io_write, mut client_io_read) = (
+        let (mut client_io_write, client_io_read) = (
             ClientConnectionWrite::new(src_address.clone(), client_io_write),
             ClientConnectionRead::new(src_address.clone(), client_io_read),
         );
-        if let Some(init_data) = init_data {
-            let agent_tcp_data_wrapper_message = ppaass_protocol::new_agent_tcp_data(
-                user_token.to_string(),
-                tunnel_id.clone(),
-                init_data,
-            )?;
-            proxy_connection
-                .send(agent_tcp_data_wrapper_message)
-                .await?;
-        }
-        let proxy_connection = Arc::new(Mutex::new(proxy_connection));
-        let (proxy_connection_write, proxy_connection_read) =
-            (proxy_connection.clone(), proxy_connection);
 
-        {
-            let tunnel_id = tunnel_id.clone();
-            tokio::spawn(async move {
-                loop {
-                    let client_message = match client_io_read.next().await {
-                        None => return,
-                        Some(Err(e)) => {
-                            error!("Fail to read client message because of error: {e:?}");
-                            return;
-                        }
-                        Some(Ok(client_message)) => client_message,
-                    };
+        let (mut proxy_connection_write, proxy_connection_read) = proxy_connection.split();
 
-                    let agent_tcp_data_wrapper_message = match ppaass_protocol::new_agent_tcp_data(
-                        user_token.to_string(),
-                        tunnel_id.clone(),
-                        client_message.freeze(),
-                    ) {
-                        Ok(agent_tcp_data) => agent_tcp_data,
-                        Err(e) => {
-                            error!("Fail to create agent tcp data because of error: {e:?}");
-                            return;
-                        }
-                    };
+        tokio::spawn(Self::relay_client_data_to_proxy(
+            proxy_connection_write,
+            client_io_read,
+            user_token.to_string(),
+            agent_edge_id.clone(),
+            proxy_edge_id.clone(),
+            src_address.clone(),
+            dst_address.clone(),
+            init_data,
+        ));
+        tokio::spawn(Self::relay_proxy_data_to_client(
+            proxy_connection_read,
+            client_io_write,
+        ));
+        Ok(())
+    }
 
-                    if let Err(e) = proxy_connection_write
-                        .lock()
-                        .await
-                        .send(agent_tcp_data_wrapper_message)
-                        .await
-                    {
-                        error!("Fail to relay agent tcp data to proxy connection [{tunnel_id}] from source address {src_address:?}, to destination address: {dst_address:?}, because of error: {e:?}");
-                        return;
+    async fn relay_proxy_data_to_client(
+        mut proxy_connection_read: SplitStream<Framed<TcpStream, ProxyConnectionCodec>>,
+        mut client_io_write: ClientConnectionWrite<TcpStream>,
+    ) {
+        loop {
+            let mut proxy_connection_read = proxy_connection_read
+                .timeout(Duration::from_secs(AGENT_CONFIG.get_proxy_relay_timeout()));
+            let proxy_message = match proxy_connection_read.try_next().await {
+                Ok(Some(Ok(proxy_message))) => proxy_message,
+                Ok(Some(Err(e))) => {
+                    error!("Fail to read data from proxy because of error: {e:?}");
+                    return;
+                }
+                Ok(None) => {
+                    return;
+                }
+                Err(_) => {
+                    return;
+                }
+            };
+            let ProxyMessage {
+                message_id,
+                secure_info,
+                payload,
+            } = proxy_message;
+            match payload {
+                ProxyMessagePayload::InitTunnelResult(_) => {
+                    return;
+                }
+                ProxyMessagePayload::RelayData(ProxyRelayData {
+                    agent_edge_id,
+                    proxy_edge_id,
+                    src_address,
+                    dst_address,
+                    data,
+                }) => {
+                    let data = BytesMut::from_iter(data);
+                    if let Err(e) = client_io_write.send(data).await {
+                        error!("Fail to relay proxy data to client because of error: {e:?}");
                     };
                 }
-            });
-        }
-
-        tokio::spawn(async move {
-            loop {
-                let proxy_wrapper_message = match proxy_connection_read.lock().await.next().await {
-                    None => return,
-                    Some(Err(e)) => {
-                        error!(
-                            "Fail to read proxy connection [{tunnel_id}] because of error: {e:?}"
-                        );
-                        return;
-                    }
-                    Some(Ok(proxy_wrapper_message)) => proxy_wrapper_message,
-                };
-
-                let UnwrappedProxyTcpPayload { payload, .. } =
-                    match unwrap_proxy_tcp_payload(proxy_wrapper_message) {
-                        Ok(proxy_tcp_payload) => proxy_tcp_payload,
-                        Err(e) => {
-                            error!(
-                            "Fail to read proxy connection [{tunnel_id}] because of error: {e:?}"
-                        );
-                            return;
-                        }
-                    };
-                match payload {
-                    ProxyTcpPayload::InitResponse(init_response) => {
-                        error!("Fail to read proxy connection [{tunnel_id}] because of invalid status: {init_response:?}");
-                        return;
-                    }
-                    ProxyTcpPayload::CloseRequest { tunnel_id } => {
-                        error!("Fail to read proxy connection [{tunnel_id}] because of it is closed by peer.");
-                        return;
-                    }
-                    ProxyTcpPayload::Data { tunnel_id, data } => {
-                        let mut bytes_to_send = BytesMut::new();
-                        bytes_to_send.extend_from_slice(&data);
-                        if let Err(e) = client_io_write.send(bytes_to_send).await {
-                            error!("Fail to send proxy connection [{tunnel_id}] data to client because of error: {e:?}");
-                            return;
-                        };
-                    }
+                ProxyMessagePayload::CloseTunnelCommand(_) => {
+                    return;
                 }
             }
-        });
+        }
+    }
 
-        Ok(())
+    async fn relay_client_data_to_proxy(
+        mut proxy_connection_write: SplitSink<
+            Framed<TcpStream, ProxyConnectionCodec>,
+            AgentMessage,
+        >,
+        client_connection_read: ClientConnectionRead<TcpStream>,
+        user_token: String,
+        agent_edge_id: String,
+        proxy_edge_id: String,
+        src_address: UnifiedNetAddress,
+        dst_address: UnifiedNetAddress,
+        init_data: Option<Bytes>,
+    ) {
+        if let Some(init_data) = init_data {
+            let agent_relay_data_message = AgentMessage {
+                message_id: Uuid::new_v4().to_string(),
+                secure_info: SecureInfo {
+                    user_token: user_token.to_string(),
+                    encryption: Encryption::Aes(random_32_bytes()),
+                },
+                payload: AgentMessagePayload::RelayData(AgentRelayData {
+                    agent_edge_id: agent_edge_id.clone(),
+                    proxy_edge_id: proxy_edge_id.clone(),
+                    src_address: src_address.clone(),
+                    dst_address: dst_address.clone(),
+                    data: init_data,
+                }),
+            };
+            proxy_connection_write
+                .send(agent_relay_data_message)
+                .await?;
+        }
+        loop {
+            let mut client_connection_read = client_connection_read
+                .timeout(Duration::from_secs(AGENT_CONFIG.get_client_relay_timeout()));
+            let client_data = match client_connection_read.try_next().await {
+                Ok(None) => return,
+                Ok(Some(Ok(data))) => data.freeze(),
+                Ok(Some(Err(e))) => {
+                    return;
+                }
+                Err(e) => {
+                    return;
+                }
+            };
+            let agent_relay_message = AgentMessage {
+                message_id: Uuid::new_v4().to_string(),
+                secure_info: SecureInfo {
+                    user_token: user_token.to_string(),
+                    encryption: Encryption::Aes(random_32_bytes()),
+                },
+                payload: AgentMessagePayload::RelayData(AgentRelayData {
+                    agent_edge_id: agent_edge_id.clone(),
+                    proxy_edge_id: proxy_edge_id.clone(),
+                    src_address: src_address.clone(),
+                    dst_address: dst_address.clone(),
+                    data: client_data,
+                }),
+            };
+            if let Err(e) = proxy_connection_write.send(agent_relay_message).await {
+                error!("Fail to relay client data to proxy because of error: {e:?}");
+            }
+        }
     }
 }

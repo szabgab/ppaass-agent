@@ -7,10 +7,9 @@ use bytecodec::{io::IoDecodeExt, EncodeExt};
 use bytes::{Buf, BufMut, BytesMut};
 use httpcodec::{BodyDecoder, BodyEncoder, Request, RequestDecoder, Response, ResponseEncoder};
 
+use crate::error::AgentError;
 use log::error;
 use tokio_util::codec::{Decoder, Encoder};
-
-use crate::error::AgentError;
 
 #[derive(Debug, Default)]
 pub(crate) struct HttpCodec {
@@ -30,7 +29,7 @@ impl Decoder for HttpCodec {
                 other_kind => {
                     error!("Http agent fail to decode because of error: {other_kind:?}");
                     return Err(AgentError::Other(format!(
-                        "Fail to decode http request because of error: {e:?}"
+                        "Http agent fail to decode because of error: {other_kind:?}"
                     )));
                 }
             },
@@ -45,7 +44,7 @@ impl Encoder<Response<Vec<u8>>> for HttpCodec {
     fn encode(&mut self, item: Response<Vec<u8>>, dst: &mut BytesMut) -> Result<(), Self::Error> {
         let encode_result = self.response_encoder.encode_into_bytes(item).map_err(|e| {
             AgentError::Other(format!(
-                "Fail to encode http response because of error: {e:?}"
+                "Fail to encode bytes to http response because of error: {e:?}"
             ))
         })?;
         dst.put_slice(encode_result.as_slice());
