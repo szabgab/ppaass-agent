@@ -1,9 +1,9 @@
 use bytes::{Buf, BufMut, Bytes, BytesMut};
 
+use crate::error::AgentError;
 use log::error;
 use tokio_util::codec::{Decoder, Encoder};
 
-use crate::error::AgentError;
 use crate::SOCKS_V5;
 
 use super::message::{
@@ -26,7 +26,7 @@ impl Decoder for Socks5AuthCommandContentCodec {
         if version != SOCKS_V5 {
             error!("The incoming protocol is not for socks 5: {version}.");
             return Err(AgentError::Other(format!(
-                "The incoming protocol is not for socks5: {version}"
+                "The incoming protocol is not for socks 5: {version}."
             )));
         }
         let methods_number = src.get_u8();

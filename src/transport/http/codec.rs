@@ -44,7 +44,7 @@ impl Encoder<Response<Vec<u8>>> for HttpCodec {
     fn encode(&mut self, item: Response<Vec<u8>>, dst: &mut BytesMut) -> Result<(), Self::Error> {
         let encode_result = self.response_encoder.encode_into_bytes(item).map_err(|e| {
             AgentError::Other(format!(
-                "Fail to encode bytes to http response because of error: {e:?}"
+                "Fail to encode http response because of error: {e:?}"
             ))
         })?;
         dst.put_slice(encode_result.as_slice());

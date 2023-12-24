@@ -3,7 +3,8 @@ use std::{mem::size_of, net::SocketAddr};
 use bytes::BytesMut;
 use futures::StreamExt;
 use log::{debug, error};
-use ppaass_protocol::values::address::UnifiedNetAddress;
+use ppaass_protocol::message::values::address::PpaassUnifiedAddress;
+
 use tokio::net::TcpStream;
 use tokio_util::codec::{Decoder, Framed, FramedParts};
 
@@ -14,7 +15,7 @@ use crate::{
     SOCKS_V4, SOCKS_V5,
 };
 
-use super::{ClientTransportDataRelayInfo, ClientTransportRelay};
+use super::ClientTransportHandshake;
 
 pub(crate) enum ClientProtocol {
     /// The client side choose to use HTTP proxy
@@ -47,9 +48,10 @@ impl Decoder for SwitchClientProtocolDecoder {
 }
 
 pub(crate) struct ClientTransportHandshakeInfo {
-    pub(crate) client_tcp_stream: TcpStream,
-    pub(crate) src_address: UnifiedNetAddress,
-    pub(crate) initial_buf: BytesMut,
+    pub client_tcp_stream: TcpStream,
+    pub src_address: PpaassUnifiedAddress,
+    pub initial_buf: BytesMut,
+    pub client_socket_addr: SocketAddr,
 }
 
 pub(crate) struct ClientTransportDispatcher;
@@ -58,7 +60,13 @@ impl ClientTransportDispatcher {
     pub(crate) async fn dispatch(
         client_tcp_stream: TcpStream,
         client_socket_address: SocketAddr,
-    ) -> Result<(), AgentError> {
+    ) -> Result<
+        (
+            ClientTransportHandshakeInfo,
+            Box<dyn ClientTransportHandshake + Send + Sync>,
+        ),
+        AgentError,
+    > {
         let mut client_message_framed = Framed::with_capacity(
             client_tcp_stream,
             SwitchClientProtocolDecoder,
@@ -72,9 +80,9 @@ impl ClientTransportDispatcher {
             }
             None => {
                 error!("Fail to read protocol from client io because of nothing to read.");
-                return Err(AgentError::ClientCodec(
-                    "Invalid client protocol".to_string(),
-                ));
+                return Err(AgentError::Other(format!(
+                    "Nothing to read from client: {client_socket_address}"
+                )));
             }
         };
 
@@ -87,30 +95,20 @@ impl ClientTransportDispatcher {
                     ..
                 } = client_message_framed.into_parts();
                 debug!("Client tcp connection [{client_socket_address}] begin to serve socks 5 protocol");
-                let client_transport_data_relay_info =
-                    Socks5ClientTransport::handshake(ClientTransportHandshakeInfo {
+                Ok((
+                    ClientTransportHandshakeInfo {
                         client_tcp_stream,
                         initial_buf,
                         src_address: client_socket_address.into(),
-                    })
-                    .await?;
-                match client_transport_data_relay_info {
-                    ClientTransportDataRelayInfo::Tcp(relay_info) => {
-                        ClientTransportRelay::tcp_relay(relay_info).await
-                    }
-
-                    ClientTransportDataRelayInfo::Udp(relay_info) => {
-                        // Socks5ClientTransport::udp_relay(relay_info).await
-                        unimplemented!("Udp not implemeted")
-                    }
-                }
+                        client_socket_addr: client_socket_address,
+                    },
+                    Box::new(Socks5ClientTransport),
+                ))
             }
             ClientProtocol::Socks4 => {
                 // For socks4 protocol
                 error!("Client tcp connection [{client_socket_address}] do not support socks v4 protocol");
-                Err(AgentError::ClientCodec(
-                    "Invalid client protocol".to_string(),
-                ))
+                Err(AgentError::Other(format!("Client tcp connection [{client_socket_address}] do not support socks v4 protocol")))
             }
             ClientProtocol::Http => {
                 // For http protocol
@@ -122,21 +120,15 @@ impl ClientTransportDispatcher {
                 debug!(
                     "Client tcp connection [{client_socket_address}] begin to serve http protocol"
                 );
-                let http_relay_info =
-                    HttpClientTransport::handshake(ClientTransportHandshakeInfo {
+                Ok((
+                    ClientTransportHandshakeInfo {
                         client_tcp_stream,
                         src_address: client_socket_address.into(),
                         initial_buf,
-                    })
-                    .await?;
-                match http_relay_info {
-                    ClientTransportDataRelayInfo::Tcp(relay_info) => {
-                        ClientTransportRelay::tcp_relay(relay_info).await
-                    }
-                    ClientTransportDataRelayInfo::Udp(_) => Err(AgentError::Other(
-                        "Invalid relay type for http transport".to_string(),
-                    )),
-                }
+                        client_socket_addr: client_socket_address,
+                    },
+                    Box::new(HttpClientTransport),
+                ))
             }
         }
     }

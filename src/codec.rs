@@ -1,39 +1,38 @@
-use crate::crypto::{AgentRsaCryptoFetcher, RSA_CRYPTO};
+use crate::crypto::AgentServerRsaCryptoFetcher;
 use crate::error::AgentError;
 use bytes::BytesMut;
-use ppaass_codec::codec::agent::encoder::AgentMessageEncoder;
-use ppaass_codec::codec::proxy::decoder::ProxyMessageDecoder;
-use ppaass_protocol::message::agent::AgentMessage;
-use ppaass_protocol::message::proxy::ProxyMessage;
+use ppaass_codec::codec::agent::PpaassAgentMessageEncoder;
+use ppaass_codec::codec::proxy::PpaassProxyMessageDecoder;
+use ppaass_protocol::message::{PpaassAgentMessage, PpaassProxyMessage};
 use tokio_util::codec::{Decoder, Encoder};
 
-pub(crate) struct ProxyConnectionCodec {
-    encoder: AgentMessageEncoder<AgentRsaCryptoFetcher>,
-    decoder: ProxyMessageDecoder<AgentRsaCryptoFetcher>,
+pub(crate) struct PpaassProxyEdgeCodec {
+    encoder: PpaassAgentMessageEncoder<AgentServerRsaCryptoFetcher>,
+    decoder: PpaassProxyMessageDecoder<AgentServerRsaCryptoFetcher>,
 }
 
-impl ProxyConnectionCodec {
-    pub fn new(compress: bool) -> Self {
+impl PpaassProxyEdgeCodec {
+    pub fn new(compress: bool, rsa_crypto_fetcher: AgentServerRsaCryptoFetcher) -> Self {
         Self {
-            encoder: AgentMessageEncoder::new(compress, RSA_CRYPTO.clone()),
-            decoder: ProxyMessageDecoder::new(RSA_CRYPTO.clone()),
+            encoder: PpaassAgentMessageEncoder::new(compress, rsa_crypto_fetcher.clone()),
+            decoder: PpaassProxyMessageDecoder::new(rsa_crypto_fetcher),
         }
     }
 }
 
-impl Decoder for ProxyConnectionCodec {
-    type Item = ProxyMessage;
+impl Encoder<PpaassAgentMessage> for PpaassProxyEdgeCodec {
     type Error = AgentError;
 
-    fn decode(&mut self, src: &mut BytesMut) -> Result<Option<Self::Item>, Self::Error> {
-        self.decoder.decode(src).map_err(AgentError::Codec)
+    fn encode(&mut self, item: PpaassAgentMessage, dst: &mut BytesMut) -> Result<(), Self::Error> {
+        self.encoder.encode(item, dst).map_err(AgentError::ProxyEdgeCodec)
     }
 }
 
-impl Encoder<AgentMessage> for ProxyConnectionCodec {
+impl Decoder for PpaassProxyEdgeCodec {
+    type Item = PpaassProxyMessage;
     type Error = AgentError;
 
-    fn encode(&mut self, item: AgentMessage, dst: &mut BytesMut) -> Result<(), Self::Error> {
-        self.encoder.encode(item, dst).map_err(AgentError::Codec)
+    fn decode(&mut self, src: &mut BytesMut) -> Result<Option<Self::Item>, Self::Error> {
+        self.decoder.decode(src).map_err(AgentError::ProxyEdgeCodec)
     }
 }

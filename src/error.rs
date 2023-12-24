@@ -1,14 +1,16 @@
-use ppaass_codec::error::CodecError;
 use std::io::Error as StdIoError;
+use ppaass_codec::error::CodecError;
+use ppaass_protocol::error::ProtocolError;
 use thiserror::Error;
+
 #[derive(Debug, Error)]
 pub enum AgentError {
-    #[error("Client side codec error happen: {0}")]
-    ClientCodec(String),
-    #[error("General I/O error happen: {0:?}")]
-    GeneralIo(#[from] StdIoError),
-    #[error("Codec error happen: {0:?}")]
-    Codec(#[from] CodecError),
-    #[error("Other error happen: {0}")]
+    #[error("Agent error happen because of io: {0:?}")]
+    StdIo(#[from] StdIoError),
+    #[error(transparent)]
+    ProxyEdgeCodec(#[from] CodecError),
+    #[error(transparent)]
+    Protocol(#[from] ProtocolError),
+    #[error("Agent error happen because of reason: {0}")]
     Other(String),
 }

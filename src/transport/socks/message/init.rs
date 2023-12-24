@@ -19,7 +19,7 @@ impl TryFrom<u8> for Socks5InitCommandType {
             2 => Ok(Socks5InitCommandType::Bind),
             3 => Ok(Socks5InitCommandType::UdpAssociate),
             unknown_type => Err(AgentError::Other(format!(
-                "Unkown socks5 init command: {unknown_type}"
+                "Can not convert byte to socks5 init command type: {unknown_type}"
             ))),
         }
     }
@@ -55,7 +55,7 @@ impl TryFrom<u8> for Socks5InitCommandResultStatus {
             8 => Ok(Socks5InitCommandResultStatus::AddressTypeNotSupported),
             9 => Ok(Socks5InitCommandResultStatus::Unassigned),
             unknown_status => Err(AgentError::Other(format!(
-                "Unkown sock5 init command result status: {unknown_status}"
+                "Can not convert byte to socks5 init command result status: {unknown_status}"
             ))),
         }
     }
@@ -80,12 +80,12 @@ impl From<Socks5InitCommandResultStatus> for u8 {
 
 #[derive(Debug, Constructor)]
 pub(crate) struct Socks5InitCommand {
-    pub(crate) request_type: Socks5InitCommandType,
-    pub(crate) dst_address: Socks5Address,
+    pub request_type: Socks5InitCommandType,
+    pub dst_address: Socks5Address,
 }
 
 #[derive(Debug, Constructor)]
 pub(crate) struct Socks5InitCommandResult {
-    pub(crate) status: Socks5InitCommandResultStatus,
-    pub(crate) bind_address: Option<Socks5Address>,
+    pub status: Socks5InitCommandResultStatus,
+    pub bind_address: Option<Socks5Address>,
 }

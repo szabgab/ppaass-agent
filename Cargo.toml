@@ -14,13 +14,12 @@ name = "ppaass-agent"
 path = "src/bin/bin.rs"
 
 [dependencies]
-ppaass-protocol={git = "https://github.com/quhxuxm/ppaass-protocol.git", branch = "main"}
-ppaass-codec={git = "https://github.com/quhxuxm/ppaass-codec.git", branch = "main"}
-ppaass-crypto={git = "https://github.com/quhxuxm/ppaass-crypto.git", branch = "main"}
+ppaass-protocol="0.1"
+ppaass-codec="0.1"
+ppaass-crypto="0.1"
 lazy_static="1.4"
 log="0.4"
 log4rs = "1.2"
-anyhow="1.0"
 tokio = {version="1.33", features = ["macros", "time", "net", "io-util", "rt-multi-thread", "fs"]}
 toml="0.8"
 thiserror="1.0"

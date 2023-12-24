@@ -3,28 +3,27 @@ use std::sync::Arc;
 
 use crate::config::AGENT_CONFIG;
 
-use anyhow::{Context, Result};
 use lazy_static::lazy_static;
 use log::error;
-use ppaass_crypto::{CryptoError, RsaCrypto, RsaCryptoFetcher};
+use ppaass_crypto::crypto::{RsaCrypto, RsaCryptoFetcher};
+use ppaass_crypto::error::CryptoError;
+use ppaass_protocol::message::values::encryption::PpaassMessagePayloadEncryptionSelector;
+use crate::error::AgentError;
 
 lazy_static! {
-    pub(crate) static ref RSA_CRYPTO: AgentRsaCryptoFetcher =
-        AgentRsaCryptoFetcher::new().expect("Can not initialize agent rsa crypto fetcher.");
+    pub(crate) static ref RSA_CRYPTO: AgentServerRsaCryptoFetcher = AgentServerRsaCryptoFetcher::new().expect("Can not initialize agent rsa crypto fetcher.");
 }
 
 #[derive(Debug, Clone)]
-pub(crate) struct AgentRsaCryptoFetcher {
+pub(crate) struct AgentServerRsaCryptoFetcher {
     cache: Arc<HashMap<String, RsaCrypto>>,
 }
 
-impl AgentRsaCryptoFetcher {
-    pub(crate) fn new() -> Result<Self> {
+impl AgentServerRsaCryptoFetcher {
+    pub(crate) fn new() -> Result<Self, AgentError> {
         let mut cache = HashMap::new();
-        let rsa_dir_path = AGENT_CONFIG
-            .get_rsa_dir()
-            .context("fail to get rsa directory from configuration file")?;
-        let rsa_dir = std::fs::read_dir(rsa_dir_path).context("fail to read rsa directory")?;
+        let rsa_dir_path = AGENT_CONFIG.get_rsa_dir();
+        let rsa_dir = std::fs::read_dir(rsa_dir_path)?;
         rsa_dir.for_each(|entry| {
             let Ok(entry) = entry else {
                 error!("fail to read {rsa_dir_path} directory because of error.");
@@ -64,14 +63,16 @@ impl AgentRsaCryptoFetcher {
             };
             cache.insert(user_token.to_string(), rsa_crypto);
         });
-        Ok(Self {
-            cache: Arc::new(cache),
-        })
+        Ok(Self { cache: Arc::new(cache) })
     }
 }
 
-impl RsaCryptoFetcher for AgentRsaCryptoFetcher {
-    fn fetch(&self, user_token: &str) -> Result<Option<&RsaCrypto>, CryptoError> {
-        Ok(self.cache.get(user_token))
+impl RsaCryptoFetcher for AgentServerRsaCryptoFetcher {
+    fn fetch(&self, user_token: impl AsRef<str>) -> Result<Option<&RsaCrypto>, CryptoError> {
+        Ok(self.cache.get(user_token.as_ref()))
     }
 }
+
+pub(crate) struct AgentServerPayloadEncryptionTypeSelector;
+
+impl PpaassMessagePayloadEncryptionSelector for AgentServerPayloadEncryptionTypeSelector {}

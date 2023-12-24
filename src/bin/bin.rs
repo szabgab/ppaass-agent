@@ -1,13 +1,16 @@
-use anyhow::Result;
-
 use log::error;
+use ppaass_agent_lib::error::AgentError;
 use ppaass_agent_lib::{config::AGENT_CONFIG, server::AgentServer};
 use tokio::runtime::Builder;
 
 const LOG_CONFIG_PATH: &str = "resources/config/ppaass-agent-log.yml";
 
-fn main() -> Result<()> {
-    log4rs::init_file(LOG_CONFIG_PATH, Default::default())?;
+fn main() -> Result<(), AgentError> {
+    log4rs::init_file(LOG_CONFIG_PATH, Default::default()).map_err(|e| {
+        AgentError::Other(format!(
+            "Fail to initialize log configuration because of error: {e:?}"
+        ))
+    })?;
 
     let agent_server_runtime = Builder::new_multi_thread()
         .enable_all()
