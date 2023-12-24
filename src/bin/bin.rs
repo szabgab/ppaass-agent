@@ -1,21 +1,17 @@
-use std::sync::Arc;
-
-use anyhow::Result;
-
 use log::error;
-use ppaass_agent_windows_lib::{
-    config::AGENT_CONFIG, crypto::AgentServerRsaCryptoFetcher, server::AgentServer,
-    RSA_CRYPTO_FETCHER,
-};
+use ppaass_agent_lib::error::AgentError;
+use ppaass_agent_lib::{config::AGENT_CONFIG, server::AgentServer};
 use tokio::runtime::Builder;
 
 const LOG_CONFIG_PATH: &str = "resources/config/ppaass-agent-log.yml";
 
-fn main() -> Result<()> {
-    log4rs::init_file(LOG_CONFIG_PATH, Default::default())?;
-    RSA_CRYPTO_FETCHER
-        .set(Arc::new(AgentServerRsaCryptoFetcher::new()?))
-        .expect("Fail to set rsa crypto fetcher.");
+fn main() -> Result<(), AgentError> {
+    log4rs::init_file(LOG_CONFIG_PATH, Default::default()).map_err(|e| {
+        AgentError::Other(format!(
+            "Fail to initialize log configuration because of error: {e:?}"
+        ))
+    })?;
+
     let agent_server_runtime = Builder::new_multi_thread()
         .enable_all()
         .worker_threads(AGENT_CONFIG.get_worker_thread_number())

@@ -1,17 +1,18 @@
-use std::{mem::size_of, net::SocketAddr, sync::Arc};
+use std::{mem::size_of, net::SocketAddr};
 
 use bytes::BytesMut;
-use deadpool::managed::Pool;
 use futures::StreamExt;
 use log::{debug, error};
+use ppaass_protocol::message::values::address::PpaassUnifiedAddress;
 
-use ppaass_protocol::message::NetAddress;
 use tokio::net::TcpStream;
 use tokio_util::codec::{Decoder, Framed, FramedParts};
 
 use crate::{
-    config::AGENT_CONFIG, error::AgentError, handler::ProxyConnectionManager,
-    transport::http::HttpClientTransport,
+    config::AGENT_CONFIG,
+    error::AgentError,
+    transport::{http::HttpClientTransport, socks::Socks5ClientTransport},
+    SOCKS_V4, SOCKS_V5,
 };
 
 use super::ClientTransportHandshake;
@@ -19,10 +20,10 @@ use super::ClientTransportHandshake;
 pub(crate) enum ClientProtocol {
     /// The client side choose to use HTTP proxy
     Http,
-    // /// The client side choose to use Socks5 proxy
-    // Socks5,
-    // /// The client side choose to use Socks4 proxy
-    // Socks4,
+    /// The client side choose to use Socks5 proxy
+    Socks5,
+    /// The client side choose to use Socks4 proxy
+    Socks4,
 }
 
 pub(crate) struct SwitchClientProtocolDecoder;
@@ -39,17 +40,18 @@ impl Decoder for SwitchClientProtocolDecoder {
         }
         let protocol_flag = src[0];
         match protocol_flag {
-            // SOCKS_V5 => Ok(Some(ClientProtocol::Socks5)),
-            // SOCKS_V4 => Ok(Some(ClientProtocol::Socks4)),
+            SOCKS_V5 => Ok(Some(ClientProtocol::Socks5)),
+            SOCKS_V4 => Ok(Some(ClientProtocol::Socks4)),
             _ => Ok(Some(ClientProtocol::Http)),
         }
     }
 }
 
 pub(crate) struct ClientTransportHandshakeInfo {
-    pub(crate) client_tcp_stream: TcpStream,
-    pub(crate) src_address: NetAddress,
-    pub(crate) initial_buf: BytesMut,
+    pub client_tcp_stream: TcpStream,
+    pub src_address: PpaassUnifiedAddress,
+    pub initial_buf: BytesMut,
+    pub client_socket_addr: SocketAddr,
 }
 
 pub(crate) struct ClientTransportDispatcher;
@@ -58,7 +60,6 @@ impl ClientTransportDispatcher {
     pub(crate) async fn dispatch(
         client_tcp_stream: TcpStream,
         client_socket_address: SocketAddr,
-        proxy_connection_pool: Arc<Pool<ProxyConnectionManager>>,
     ) -> Result<
         (
             ClientTransportHandshakeInfo,
@@ -80,19 +81,35 @@ impl ClientTransportDispatcher {
             None => {
                 error!("Fail to read protocol from client io because of nothing to read.");
                 return Err(AgentError::Other(format!(
-                    "Fail to read protocol from client io because of nothing to read."
+                    "Nothing to read from client: {client_socket_address}"
                 )));
             }
         };
 
         match client_protocol {
-            // ClientProtocol::Socks4 => {
-            //     // For socks4 protocol
-            //     error!("Client tcp connection [{client_socket_address}] do not support socks v4 protocol");
-            //     Err(AgentError::Other(format!(
-            //         "Unsupported socks4 protocol for client: {client_socket_address}"
-            //     )))
-            // }
+            ClientProtocol::Socks5 => {
+                // For socks5 protocol
+                let FramedParts {
+                    io: client_tcp_stream,
+                    read_buf: initial_buf,
+                    ..
+                } = client_message_framed.into_parts();
+                debug!("Client tcp connection [{client_socket_address}] begin to serve socks 5 protocol");
+                Ok((
+                    ClientTransportHandshakeInfo {
+                        client_tcp_stream,
+                        initial_buf,
+                        src_address: client_socket_address.into(),
+                        client_socket_addr: client_socket_address,
+                    },
+                    Box::new(Socks5ClientTransport),
+                ))
+            }
+            ClientProtocol::Socks4 => {
+                // For socks4 protocol
+                error!("Client tcp connection [{client_socket_address}] do not support socks v4 protocol");
+                Err(AgentError::Other(format!("Client tcp connection [{client_socket_address}] do not support socks v4 protocol")))
+            }
             ClientProtocol::Http => {
                 // For http protocol
                 let FramedParts {
@@ -108,8 +125,9 @@ impl ClientTransportDispatcher {
                         client_tcp_stream,
                         src_address: client_socket_address.into(),
                         initial_buf,
+                        client_socket_addr: client_socket_address,
                     },
-                    Box::new(HttpClientTransport::new(proxy_connection_pool)),
+                    Box::new(HttpClientTransport),
                 ))
             }
         }

@@ -1,26 +1,16 @@
-use ppaass_codec::error::{DecoderError, EncoderError};
-use ppaass_protocol::error::ProtocolError;
 use std::io::Error as StdIoError;
+use ppaass_codec::error::CodecError;
+use ppaass_protocol::error::ProtocolError;
 use thiserror::Error;
 
 #[derive(Debug, Error)]
 pub enum AgentError {
-    #[error("Timeout error happen: {0}")]
-    Timeout(u64),
-    #[error("I/O error happen: {0:?}")]
-    Io(#[from] StdIoError),
-    #[error("Proxy decoder error happen: {0:?}")]
-    DecoderProxyEdge(#[from] DecoderError),
-    #[error("Proxy encoder error happen: {0:?}")]
-    EncoderProxyEdge(#[from] EncoderError),
-
-    #[error("Proxy decoder error happen: {0:?}")]
-    DecoderClient(String),
-    #[error("Proxy encoder error happen: {0:?}")]
-    EncoderClient(String),
-
-    #[error("Protocol error happen: {0:?}")]
+    #[error("Agent error happen because of io: {0:?}")]
+    StdIo(#[from] StdIoError),
+    #[error(transparent)]
+    ProxyEdgeCodec(#[from] CodecError),
+    #[error(transparent)]
     Protocol(#[from] ProtocolError),
-    #[error("Other error happen: {0}")]
+    #[error("Agent error happen because of reason: {0}")]
     Other(String),
 }

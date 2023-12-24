@@ -1,9 +1,9 @@
-use std::{net::SocketAddr, sync::Arc};
+use std::net::SocketAddr;
 
+use crate::config::AGENT_CONFIG;
 use crate::error::AgentError;
 use crate::transport::dispatcher::ClientTransportDispatcher;
 use crate::transport::ClientTransportDataRelayInfo;
-use crate::{config::AGENT_CONFIG, handler::ProxyConnectionManager};
 use log::{debug, error, info};
 use tokio::net::{TcpListener, TcpStream};
 
@@ -14,11 +14,8 @@ impl AgentServer {
     async fn accept_client_connection(
         tcp_listener: &TcpListener,
     ) -> Result<(TcpStream, SocketAddr), AgentError> {
-        let (client_tcp_stream, client_socket_address) =
-            tcp_listener.accept().await.map_err(AgentError::Io)?;
-        client_tcp_stream
-            .set_nodelay(true)
-            .map_err(AgentError::Io)?;
+        let (client_tcp_stream, client_socket_address) = tcp_listener.accept().await?;
+        client_tcp_stream.set_nodelay(true)?;
         Ok((client_tcp_stream, client_socket_address))
     }
 
@@ -29,20 +26,7 @@ impl AgentServer {
             format!("0.0.0.0:{}", AGENT_CONFIG.get_port())
         };
         info!("Agent server start to serve request on address: {agent_server_bind_addr}.");
-        let tcp_listener = TcpListener::bind(&agent_server_bind_addr)
-            .await
-            .map_err(AgentError::Io)?;
-
-        let proxy_connection_pool = Arc::new(
-            Pool::builder(ProxyConnectionManager::new()?)
-                .max_size(16)
-                .build()
-                .map_err(|e| {
-                    AgentError::Other(format!(
-                        "Fail to create proxy connection pool because of error: {e:?}"
-                    ))
-                })?,
-        );
+        let tcp_listener = TcpListener::bind(&agent_server_bind_addr).await?;
         loop {
             let (client_tcp_stream, client_socket_address) =
                 match Self::accept_client_connection(&tcp_listener).await {
@@ -58,14 +42,9 @@ impl AgentServer {
                 "Accept client tcp connection on address: {}",
                 client_socket_address
             );
-            let proxy_connection_pool = proxy_connection_pool.clone();
             tokio::spawn(async move {
-                if let Err(e) = Self::handle_client_connection(
-                    client_tcp_stream,
-                    client_socket_address,
-                    proxy_connection_pool,
-                )
-                .await
+                if let Err(e) =
+                    Self::handle_client_connection(client_tcp_stream, client_socket_address).await
                 {
                     error!("Fail to handle client connection [{client_socket_address}] because of error: {e:?}")
                 };
@@ -76,14 +55,9 @@ impl AgentServer {
     async fn handle_client_connection(
         client_tcp_stream: TcpStream,
         client_socket_address: SocketAddr,
-        proxy_connection_pool: Arc<Pool<ProxyConnectionManager>>,
     ) -> Result<(), AgentError> {
-        let (handshake_info, handshake) = ClientTransportDispatcher::dispatch(
-            client_tcp_stream,
-            client_socket_address,
-            proxy_connection_pool,
-        )
-        .await?;
+        let (handshake_info, handshake) =
+            ClientTransportDispatcher::dispatch(client_tcp_stream, client_socket_address).await?;
         let (relay_info, relay) = handshake.handshake(handshake_info).await?;
         match relay_info {
             ClientTransportDataRelayInfo::Tcp(tcp_relay_info) => {

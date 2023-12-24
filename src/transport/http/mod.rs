@@ -1,7 +1,5 @@
 pub(crate) mod codec;
 
-use std::sync::Arc;
-
 use async_trait::async_trait;
 use bytecodec::{bytes::BytesEncoder, EncodeExt};
 
@@ -9,19 +7,21 @@ use bytes::Bytes;
 use derive_more::Constructor;
 use futures::{SinkExt, StreamExt};
 use httpcodec::{BodyEncoder, HttpVersion, ReasonPhrase, RequestEncoder, Response, StatusCode};
-use log::debug;
-
-use ppaass_protocol::message::{
-    NetAddress, ProxyTcpInitResponseStatus, ProxyTcpPayload, UnwrappedProxyTcpPayload,
-};
-use ppaass_protocol::unwrap_proxy_tcp_payload;
+use log::{debug, error};
+use ppaass_crypto::random_32_bytes;
+use ppaass_protocol::generator::PpaassMessageGenerator;
+use ppaass_protocol::message::payload::tcp::{ProxyTcpInitResult, ProxyTcpPayload};
+use ppaass_protocol::message::values::address::PpaassUnifiedAddress;
+use ppaass_protocol::message::values::encryption::PpaassMessagePayloadEncryptionSelector;
+use ppaass_protocol::message::{PpaassProxyMessage, PpaassProxyMessagePayload};
 use tokio_util::codec::{Framed, FramedParts};
 use url::Url;
 
+use crate::crypto::AgentServerPayloadEncryptionTypeSelector;
 use crate::{
     config::AGENT_CONFIG,
+    connection::PROXY_CONNECTION_FACTORY,
     error::AgentError,
-    handler::ProxyConnectionHandler,
     transport::{
         http::codec::HttpCodec, ClientTransportDataRelayInfo, ClientTransportTcpDataRelay,
     },
@@ -39,10 +39,8 @@ const HTTP_DEFAULT_PORT: u16 = 80;
 const OK_CODE: u16 = 200;
 const CONNECTION_ESTABLISHED: &str = "Connection Established";
 
-#[derive(Constructor)]
-pub(crate) struct HttpClientTransport {
-    proxy_connection_pool: Arc<ProxyConnectionHandler>,
-}
+#[derive(Debug, Constructor)]
+pub(crate) struct HttpClientTransport;
 
 impl ClientTransportRelay for HttpClientTransport {}
 
@@ -62,13 +60,14 @@ impl ClientTransportHandshake for HttpClientTransport {
             initial_buf,
             src_address,
             client_tcp_stream,
+            client_socket_addr,
         } = handshake_info;
         let mut framed_parts = FramedParts::new(client_tcp_stream, HttpCodec::default());
         framed_parts.read_buf = initial_buf;
         let mut http_framed = Framed::from_parts(framed_parts);
-        let http_message = http_framed.next().await.ok_or(AgentError::Other(
-            "Client http connection exhausted".to_string(),
-        ))??;
+        let http_message = http_framed.next().await.ok_or(AgentError::Other(format!(
+            "Nothing to read from client: {client_socket_addr}"
+        )))??;
         let http_method = http_message.method().to_string().to_lowercase();
         let (request_url, init_data) = if http_method == CONNECT_METHOD {
             (
@@ -87,7 +86,7 @@ impl ClientTransportHandshake for HttpClientTransport {
                 .encode_into_bytes(http_message)
                 .map_err(|e| {
                     AgentError::Other(format!(
-                        "Fail to encode http request body because of error: {e:?}"
+                        "Fail to encode http data for client [{client_socket_addr}] because of error: {e:?}"
                     ))
                 })?
                 .into();
@@ -96,96 +95,72 @@ impl ClientTransportHandshake for HttpClientTransport {
 
         let parsed_request_url = Url::parse(request_url.as_str())
             .map_err(|e| AgentError::Other(format!("Fail to parse url because of error: {e:?}")))?;
-        let target_port = match parsed_request_url.port() {
-            None => match parsed_request_url.scheme() {
-                HTTPS_SCHEMA => HTTPS_DEFAULT_PORT,
-                _ => HTTP_DEFAULT_PORT,
-            },
-            Some(v) => v,
-        };
+        let target_port =
+            parsed_request_url
+                .port()
+                .unwrap_or_else(|| match parsed_request_url.scheme() {
+                    HTTPS_SCHEMA => HTTPS_DEFAULT_PORT,
+                    _ => HTTP_DEFAULT_PORT,
+                });
         let target_host = parsed_request_url
             .host()
             .ok_or(AgentError::Other(format!(
-                "No host in the request url: {parsed_request_url}"
+                "Fail to parse target host from request url:{parsed_request_url}"
             )))?
             .to_string();
         if target_host.eq("0.0.0.1") || target_host.eq("127.0.0.1") {
-            return Err(AgentError::Other(
-                "0.0.0.1 or 127.0.0.1 is not a valid destination address".to_string(),
-            ));
+            return Err(AgentError::Other(format!(
+                "0.0.0.1 or 127.0.0.1 is not a valid destination address"
+            )));
         }
-        let dst_address = NetAddress::Domain {
+        let dst_address = PpaassUnifiedAddress::Domain {
             host: target_host,
             port: target_port,
         };
-        let user_token = AGENT_CONFIG.get_user_token();
-        let mut proxy_connection = self
-            .proxy_connection_pool
-            .fetch_proxy_connection_output_sender()
-            .await
-            .map_err(|e| {
-                AgentError::Other(format!(
-                    "Fail to get proxy connection because of error: {e:?}"
-                ))
-            })?;
-        debug!(
-            "Client tcp connection [{src_address}] take proxy connection [{}] to do proxy",
-            proxy_connection.key
-        );
-        let agent_tcp_init_request = ppaass_protocol::new_agent_tcp_init_request(
-            user_token.to_string(),
-            src_address,
-            dst_address,
-        )?;
-        proxy_connection
-            .proxy_outbound_tx
-            .send(agent_tcp_init_request)
-            .map_err(|e| {
-                AgentError::Other(format!(
-                    "Fail to send agent tcp init request to proxy because of error: {e:?}"
-                ))
-            })?;
 
-        let proxy_wrapper_message =
-            proxy_connection
-                .next()
-                .await
-                .ok_or(AgentError::Other(format!(
-                    "Proxy connection [{}] exhausted.",
-                    proxy_connection.key
-                )))??;
-        let UnwrappedProxyTcpPayload { payload, .. } =
-            unwrap_proxy_tcp_payload(proxy_wrapper_message)?;
-        let (tunnel_id, src_address, dst_address) = match payload {
-            ProxyTcpPayload::Data { tunnel_id, .. } => {
+        let user_token = AGENT_CONFIG.get_user_token();
+        let payload_encryption =
+            AgentServerPayloadEncryptionTypeSelector::select(user_token, Some(random_32_bytes()));
+        let tcp_init_request = PpaassMessageGenerator::generate_agent_tcp_init_message(
+            user_token.to_string(),
+            src_address.clone(),
+            dst_address.clone(),
+            payload_encryption.clone(),
+        )?;
+
+        let mut proxy_connection = PROXY_CONNECTION_FACTORY.create_connection().await?;
+        debug!("Client tcp connection [{src_address}] success to create proxy connection.",);
+        proxy_connection.send(tcp_init_request).await?;
+
+        let proxy_message = proxy_connection
+            .next()
+            .await
+            .ok_or(AgentError::Other(format!(
+                "Nothing to read from proxy for client: {client_socket_addr}"
+            )))??;
+
+        let PpaassProxyMessage {
+            payload: proxy_message_payload,
+            ..
+        } = proxy_message;
+
+        let PpaassProxyMessagePayload::Tcp(ProxyTcpPayload::Init { result, .. }) =
+            proxy_message_payload
+        else {
+            return Err(AgentError::Other(format!(
+                "Not a tcp init response for client {client_socket_addr}."
+            )));
+        };
+        let tunnel_id = match result {
+            ProxyTcpInitResult::Success(tunnel_id) => tunnel_id,
+            ProxyTcpInitResult::Fail(reason) => {
+                error!("Client http tcp connection [{src_address}] fail to initialize tcp connection with proxy because of reason: {reason:?}");
                 return Err(AgentError::Other(format!(
-                    "Proxy connection [{tunnel_id}] fail to connect destination because of invalid status"
-                )));
-            }
-            ProxyTcpPayload::InitResponse(ProxyTcpInitResponseStatus::Failure {
-                tunnel_id,
-                src_address,
-                dst_address,
-                reason,
-            }) => {
-                return Err(AgentError::Other(format!(
-                    "Proxy connection [{tunnel_id}] fail to connect destination because of reason: {reason:?}, source address: {src_address:?}, destination address: {dst_address:?}"
-                )));
-            }
-            ProxyTcpPayload::InitResponse(ProxyTcpInitResponseStatus::Success {
-                tunnel_id,
-                src_address,
-                dst_address,
-            }) => (tunnel_id, src_address, dst_address),
-            ProxyTcpPayload::CloseRequest { tunnel_id } => {
-                return Err(AgentError::Other(format!(
-                    "Proxy connection [{tunnel_id}] closed by peer."
+                    "Client http tcp connection [{src_address}] fail to initialize tcp connection with proxy because of reason: {reason:?}"
                 )));
             }
         };
-
-        debug!("Proxy connection [{tunnel_id}] success connect to: {dst_address:?} from source: {src_address:?} ");
-
+        debug!("Client http tcp connection [{src_address}] success to initialize tcp connection with proxy on tunnel: {tunnel_id}");
         if init_data.is_none() {
             //For https proxy
             let http_connect_success_response = Response::new(
@@ -202,16 +177,14 @@ impl ClientTransportHandshake for HttpClientTransport {
         } = http_framed.into_parts();
         Ok((
             ClientTransportDataRelayInfo::Tcp(ClientTransportTcpDataRelay {
+                tunnel_id,
                 client_tcp_stream,
                 src_address,
                 dst_address,
                 proxy_connection,
                 init_data,
-                tunnel_id,
             }),
-            Box::new(Self {
-                proxy_connection_pool: self.proxy_connection_pool.clone(),
-            }),
+            Box::new(Self),
         ))
     }
 }
