@@ -7,8 +7,8 @@ use crate::{config::AGENT_CONFIG, error::AgentError};
 
 use async_trait::async_trait;
 use bytes::{Bytes, BytesMut};
+use futures::SinkExt;
 use futures::StreamExt as FuturesStreamExt;
-use futures::{Sink, SinkExt, Stream};
 use log::{debug, error};
 
 use ppaass_crypto::random_32_bytes;
