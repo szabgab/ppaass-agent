@@ -2,24 +2,15 @@ pub(crate) mod dispatcher;
 mod http;
 mod socks;
 
-use std::{
-    pin::Pin,
-    task::{Context, Poll},
-};
-
 use self::dispatcher::ClientTransportHandshakeInfo;
 use crate::{config::AGENT_CONFIG, error::AgentError};
 
 use async_trait::async_trait;
 use bytes::{Bytes, BytesMut};
 use futures::StreamExt as FuturesStreamExt;
-use futures::{
-    stream::{SplitSink, SplitStream},
-    Sink, SinkExt, Stream,
-};
+use futures::{Sink, SinkExt, Stream};
 use log::{debug, error};
 
-use pin_project::pin_project;
 use ppaass_crypto::random_32_bytes;
 use ppaass_protocol::generator::PpaassMessageGenerator;
 use ppaass_protocol::message::payload::tcp::ProxyTcpPayload;
@@ -29,112 +20,9 @@ use ppaass_protocol::message::{PpaassProxyMessage, PpaassProxyMessagePayload};
 
 use crate::codec::PpaassProxyEdgeCodec;
 use crate::crypto::AgentServerPayloadEncryptionTypeSelector;
-use tokio::{
-    io::{AsyncRead, AsyncWrite},
-    net::{TcpStream, UdpSocket},
-};
+use tokio::net::{TcpStream, UdpSocket};
 use tokio_stream::StreamExt as TokioStreamExt;
 use tokio_util::codec::{BytesCodec, Framed};
-
-#[pin_project]
-struct ClientConnectionWrite<T>
-where
-    T: AsyncRead + AsyncWrite + Send + Sync + Unpin + 'static,
-{
-    src_address: PpaassUnifiedAddress,
-
-    #[pin]
-    client_bytes_framed_write: SplitSink<Framed<T, BytesCodec>, BytesMut>,
-}
-
-impl<T> ClientConnectionWrite<T>
-where
-    T: AsyncRead + AsyncWrite + Send + Sync + Unpin + 'static,
-{
-    fn new(
-        src_address: PpaassUnifiedAddress,
-        client_bytes_framed_write: SplitSink<Framed<T, BytesCodec>, BytesMut>,
-    ) -> Self {
-        Self {
-            src_address,
-            client_bytes_framed_write,
-        }
-    }
-}
-
-impl<T> Sink<BytesMut> for ClientConnectionWrite<T>
-where
-    T: AsyncRead + AsyncWrite + Send + Sync + Unpin + 'static,
-{
-    type Error = AgentError;
-
-    fn poll_ready(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
-        let this = self.project();
-        this.client_bytes_framed_write
-            .poll_ready(cx)
-            .map_err(AgentError::StdIo)
-    }
-
-    fn start_send(self: Pin<&mut Self>, item: BytesMut) -> Result<(), Self::Error> {
-        let this = self.project();
-        this.client_bytes_framed_write
-            .start_send(item)
-            .map_err(AgentError::StdIo)
-    }
-
-    fn poll_flush(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
-        let this = self.project();
-        this.client_bytes_framed_write
-            .poll_flush(cx)
-            .map_err(AgentError::StdIo)
-    }
-
-    fn poll_close(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
-        let this = self.project();
-        this.client_bytes_framed_write
-            .poll_close(cx)
-            .map_err(AgentError::StdIo)
-    }
-}
-
-#[pin_project]
-struct ClientConnectionRead<T>
-where
-    T: AsyncRead + AsyncWrite + Send + Sync + Unpin + 'static,
-{
-    src_address: PpaassUnifiedAddress,
-    #[pin]
-    client_bytes_framed_read: SplitStream<Framed<T, BytesCodec>>,
-}
-
-impl<T> ClientConnectionRead<T>
-where
-    T: AsyncRead + AsyncWrite + Send + Sync + Unpin + 'static,
-{
-    fn new(
-        src_address: PpaassUnifiedAddress,
-        client_bytes_framed_read: SplitStream<Framed<T, BytesCodec>>,
-    ) -> Self {
-        Self {
-            src_address,
-            client_bytes_framed_read,
-        }
-    }
-}
-
-impl<T> Stream for ClientConnectionRead<T>
-where
-    T: AsyncRead + AsyncWrite + Send + Sync + Unpin + 'static,
-{
-    type Item = Result<BytesMut, AgentError>;
-
-    fn poll_next(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
-        let this = self.project();
-        this.client_bytes_framed_read
-            .poll_next(cx)
-            .map_err(AgentError::StdIo)
-    }
-}
 
 pub(crate) enum ClientTransportDataRelayInfo {
     Tcp(ClientTransportTcpDataRelay),
@@ -197,17 +85,14 @@ pub(crate) trait ClientTransportRelay {
             init_data,
         } = tcp_relay_info;
 
-        debug!("Agent going to relay tcp data from destination: {dst_address}");
+        debug!("Agent going to relay tcp data from source: {src_address} to destination: {dst_address}");
         let client_io_framed = Framed::with_capacity(
             client_tcp_stream,
             BytesCodec::new(),
             AGENT_CONFIG.get_client_receive_buffer_size(),
         );
-        let (client_io_write, client_io_read) = client_io_framed.split::<BytesMut>();
-        let (mut client_io_write, client_io_read) = (
-            ClientConnectionWrite::new(src_address.clone(), client_io_write),
-            ClientConnectionRead::new(src_address.clone(), client_io_read),
-        );
+        let (mut client_io_write, client_io_read) = client_io_framed.split::<BytesMut>();
+
         if let Some(init_data) = init_data {
             let agent_message = PpaassMessageGenerator::generate_agent_tcp_data_message(
                 user_token.to_string(),
