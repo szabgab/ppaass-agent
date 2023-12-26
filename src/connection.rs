@@ -59,6 +59,7 @@ impl ProxyConnectionFactory {
         };
         debug!("Success connect to proxy.");
         proxy_tcp_stream.set_nodelay(true)?;
+        proxy_tcp_stream.set_linger(None)?;
         let proxy_connection = Framed::with_capacity(
             proxy_tcp_stream,
             PpaassProxyEdgeCodec::new(AGENT_CONFIG.get_compress(), RSA_CRYPTO.clone()),
