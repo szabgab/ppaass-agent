@@ -183,6 +183,7 @@ impl ClientTransportHandshake for HttpClientTransport {
                 dst_address,
                 proxy_connection,
                 init_data,
+                payload_encryption,
             }),
             Box::new(Self),
         ))

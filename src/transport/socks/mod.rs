@@ -369,6 +369,7 @@ impl Socks5ClientTransport {
                 dst_address,
                 proxy_connection,
                 init_data: None,
+                payload_encryption,
             },
         ))
     }

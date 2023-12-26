@@ -15,7 +15,9 @@ use ppaass_crypto::random_32_bytes;
 use ppaass_protocol::generator::PpaassMessageGenerator;
 use ppaass_protocol::message::payload::tcp::ProxyTcpPayload;
 use ppaass_protocol::message::values::address::PpaassUnifiedAddress;
-use ppaass_protocol::message::values::encryption::PpaassMessagePayloadEncryptionSelector;
+use ppaass_protocol::message::values::encryption::{
+    PpaassMessagePayloadEncryption, PpaassMessagePayloadEncryptionSelector,
+};
 use ppaass_protocol::message::{PpaassProxyMessage, PpaassProxyMessagePayload};
 
 use crate::codec::PpaassProxyEdgeCodec;
@@ -37,6 +39,7 @@ pub(crate) struct ClientTransportTcpDataRelay {
     dst_address: PpaassUnifiedAddress,
     proxy_connection: Framed<TcpStream, PpaassProxyEdgeCodec>,
     init_data: Option<Bytes>,
+    payload_encryption: PpaassMessagePayloadEncryption,
 }
 
 #[non_exhaustive]
@@ -74,8 +77,6 @@ pub(crate) trait ClientTransportRelay {
         tcp_relay_info: ClientTransportTcpDataRelay,
     ) -> Result<(), AgentError> {
         let user_token = AGENT_CONFIG.get_user_token();
-        let payload_encryption =
-            AgentServerPayloadEncryptionTypeSelector::select(user_token, Some(random_32_bytes()));
         let ClientTransportTcpDataRelay {
             tunnel_id,
             client_tcp_stream,
@@ -83,6 +84,7 @@ pub(crate) trait ClientTransportRelay {
             dst_address,
             mut proxy_connection,
             init_data,
+            payload_encryption,
         } = tcp_relay_info;
 
         debug!("Agent going to relay tcp data from source: {src_address} to destination: {dst_address}");
