@@ -1,6 +1,6 @@
-use std::io::Error as StdIoError;
 use ppaass_codec::error::CodecError;
 use ppaass_protocol::error::ProtocolError;
+use std::io::Error as StdIoError;
 use thiserror::Error;
 
 #[derive(Debug, Error)]

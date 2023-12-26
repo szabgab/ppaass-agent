@@ -3,15 +3,16 @@ use std::sync::Arc;
 
 use crate::config::AGENT_CONFIG;
 
+use crate::error::AgentError;
 use lazy_static::lazy_static;
 use log::error;
 use ppaass_crypto::crypto::{RsaCrypto, RsaCryptoFetcher};
 use ppaass_crypto::error::CryptoError;
 use ppaass_protocol::message::values::encryption::PpaassMessagePayloadEncryptionSelector;
-use crate::error::AgentError;
 
 lazy_static! {
-    pub(crate) static ref RSA_CRYPTO: AgentServerRsaCryptoFetcher = AgentServerRsaCryptoFetcher::new().expect("Can not initialize agent rsa crypto fetcher.");
+    pub(crate) static ref RSA_CRYPTO: AgentServerRsaCryptoFetcher =
+        AgentServerRsaCryptoFetcher::new().expect("Can not initialize agent rsa crypto fetcher.");
 }
 
 #[derive(Debug, Clone)]
@@ -63,7 +64,9 @@ impl AgentServerRsaCryptoFetcher {
             };
             cache.insert(user_token.to_string(), rsa_crypto);
         });
-        Ok(Self { cache: Arc::new(cache) })
+        Ok(Self {
+            cache: Arc::new(cache),
+        })
     }
 }
 

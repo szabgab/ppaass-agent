@@ -24,7 +24,9 @@ impl Encoder<PpaassAgentMessage> for PpaassProxyEdgeCodec {
     type Error = AgentError;
 
     fn encode(&mut self, item: PpaassAgentMessage, dst: &mut BytesMut) -> Result<(), Self::Error> {
-        self.encoder.encode(item, dst).map_err(AgentError::ProxyEdgeCodec)
+        self.encoder
+            .encode(item, dst)
+            .map_err(AgentError::ProxyEdgeCodec)
     }
 }
 
