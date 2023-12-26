@@ -277,6 +277,11 @@ impl Socks5ClientTransport {
     ) -> Result<ClientTransportDataRelayInfo, AgentError> {
         match &dst_address {
             PpaassUnifiedAddress::Ip(socket_addr) => {
+                if socket_addr.ip().is_multicast() {
+                    return Err(AgentError::Other(format!(
+                        "Multicast address is not allowed: {socket_addr}"
+                    )));
+                }
                 if socket_addr.ip().is_loopback() {
                     return Err(AgentError::Other(format!(
                         "Loopback address is not allowed: {socket_addr}"
@@ -286,6 +291,23 @@ impl Socks5ClientTransport {
                     return Err(AgentError::Other(format!(
                         "Unspecified address is not allowed: {socket_addr}"
                     )));
+                }
+                if let SocketAddr::V4(ipv4_addr) = socket_addr {
+                    if ipv4_addr.ip().is_broadcast() {
+                        return Err(AgentError::Other(format!(
+                            "Broadcase address is not allowed: {socket_addr}"
+                        )));
+                    }
+                    if ipv4_addr.ip().is_private() {
+                        return Err(AgentError::Other(format!(
+                            "Private address is not allowed: {socket_addr}"
+                        )));
+                    }
+                    if ipv4_addr.ip().is_link_local() {
+                        return Err(AgentError::Other(format!(
+                            "Link local address is not allowed: {socket_addr}"
+                        )));
+                    }
                 }
             }
             PpaassUnifiedAddress::Domain { host, port } => {
