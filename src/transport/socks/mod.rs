@@ -199,9 +199,10 @@ impl Socks5ClientTransport {
                 client_to_dst_socks5_udp_packet.data,
                 true,
             )?;
-            let mut proxy_connection = PROXY_CONNECTION_FACTORY.create_connection().await?;
-            proxy_connection.send(agent_udp_message).await?;
-            let proxy_udp_message = match proxy_connection.next().await {
+            let proxy_connection = PROXY_CONNECTION_FACTORY.create_proxy_connection().await?;
+            let (mut proxy_connection_write, mut proxy_connection_read) = proxy_connection.split();
+            proxy_connection_write.send(agent_udp_message).await?;
+            let proxy_udp_message = match proxy_connection_read.next().await {
                 Some(Ok(proxy_udp_message)) => proxy_udp_message,
                 Some(Err(e)) => return Err(e.into()),
                 None => return Ok(()),
@@ -328,17 +329,17 @@ impl Socks5ClientTransport {
             dst_address.clone(),
             payload_encryption.clone(),
         )?;
-        let mut proxy_connection = PROXY_CONNECTION_FACTORY.create_connection().await?;
-
+        let proxy_connection = PROXY_CONNECTION_FACTORY.create_proxy_connection().await?;
+        let (mut proxy_connection_write, mut proxy_connection_read) = proxy_connection.split();
         debug!("Client tcp connection [{src_address}] success create proxy connection.",);
-        if let Err(e) = proxy_connection.send(tcp_init_request).await {
+        if let Err(e) = proxy_connection_write.send(tcp_init_request).await {
             error!(
                 "Fail to send tcp init request to proxy in socks5 agent because of error: {e:?}"
             );
             return Err(e);
         };
 
-        let proxy_message = match proxy_connection.next().await {
+        let proxy_message = match proxy_connection_read.next().await {
             None => {
                 error!("Fail to receive tcp init response from proxy in socks5 agent because of connection exhausted: {client_socket_addr}");
                 return Err(AgentError::Other(format!("Fail to receive tcp init response from proxy in socks5 agent because of connection exhausted: {client_socket_addr}")));
@@ -389,7 +390,8 @@ impl Socks5ClientTransport {
                 client_tcp_stream,
                 src_address,
                 dst_address,
-                proxy_connection,
+                proxy_connection_write,
+                proxy_connection_read,
                 init_data: None,
                 payload_encryption,
             },

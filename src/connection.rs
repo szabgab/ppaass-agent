@@ -5,6 +5,7 @@ use lazy_static::lazy_static;
 use tokio::{net::TcpStream, time::timeout};
 
 use log::{debug, error};
+use tokio_io_timeout::TimeoutStream;
 use tokio_util::codec::Framed;
 
 use crate::codec::PpaassProxyEdgeCodec;
@@ -34,9 +35,9 @@ impl ProxyConnectionFactory {
         Ok(Self { proxy_addresses })
     }
 
-    pub(crate) async fn create_connection(
+    pub(crate) async fn create_proxy_connection(
         &self,
-    ) -> Result<Framed<TcpStream, PpaassProxyEdgeCodec>, AgentError> {
+    ) -> Result<Framed<TimeoutStream<TcpStream>, PpaassProxyEdgeCodec>, AgentError> {
         debug!("Take proxy connection from pool.");
         let proxy_tcp_stream = match timeout(
             Duration::from_secs(AGENT_CONFIG.get_connect_to_proxy_timeout()),
@@ -60,6 +61,9 @@ impl ProxyConnectionFactory {
         debug!("Success connect to proxy.");
         proxy_tcp_stream.set_nodelay(true)?;
         proxy_tcp_stream.set_linger(None)?;
+        let mut proxy_tcp_stream = TimeoutStream::new(proxy_tcp_stream);
+        proxy_tcp_stream.set_read_timeout(Some(Duration::from_secs(120)));
+        proxy_tcp_stream.set_write_timeout(Some(Duration::from_secs(120)));
         let proxy_connection = Framed::with_capacity(
             proxy_tcp_stream,
             PpaassProxyEdgeCodec::new(AGENT_CONFIG.get_compress(), RSA_CRYPTO.clone()),

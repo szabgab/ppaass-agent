@@ -7,19 +7,21 @@ use crate::{config::AGENT_CONFIG, error::AgentError};
 
 use async_trait::async_trait;
 use bytes::{Bytes, BytesMut};
-use futures::SinkExt;
-use futures::StreamExt as FuturesStreamExt;
+use futures_util::stream::{SplitSink, SplitStream};
+use futures_util::{SinkExt, StreamExt};
+
 use log::{debug, error};
 
 use ppaass_protocol::generator::PpaassMessageGenerator;
 use ppaass_protocol::message::payload::tcp::ProxyTcpPayload;
 use ppaass_protocol::message::values::address::PpaassUnifiedAddress;
 use ppaass_protocol::message::values::encryption::PpaassMessagePayloadEncryption;
-use ppaass_protocol::message::{PpaassProxyMessage, PpaassProxyMessagePayload};
+use ppaass_protocol::message::{PpaassAgentMessage, PpaassProxyMessage, PpaassProxyMessagePayload};
 
 use crate::codec::PpaassProxyEdgeCodec;
 
 use tokio::net::{TcpStream, UdpSocket};
+use tokio_io_timeout::TimeoutStream;
 use tokio_stream::StreamExt as TokioStreamExt;
 use tokio_util::codec::{BytesCodec, Framed};
 
@@ -34,7 +36,9 @@ pub(crate) struct ClientTransportTcpDataRelay {
     client_tcp_stream: TcpStream,
     src_address: PpaassUnifiedAddress,
     dst_address: PpaassUnifiedAddress,
-    proxy_connection: Framed<TcpStream, PpaassProxyEdgeCodec>,
+    proxy_connection_write:
+        SplitSink<Framed<TimeoutStream<TcpStream>, PpaassProxyEdgeCodec>, PpaassAgentMessage>,
+    proxy_connection_read: SplitStream<Framed<TimeoutStream<TcpStream>, PpaassProxyEdgeCodec>>,
     init_data: Option<Bytes>,
     payload_encryption: PpaassMessagePayloadEncryption,
 }
@@ -79,7 +83,8 @@ pub(crate) trait ClientTransportRelay {
             client_tcp_stream,
             src_address,
             dst_address,
-            mut proxy_connection,
+            mut proxy_connection_write,
+            proxy_connection_read,
             init_data,
             payload_encryption,
         } = tcp_relay_info;
@@ -98,10 +103,8 @@ pub(crate) trait ClientTransportRelay {
                 payload_encryption.clone(),
                 init_data,
             )?;
-            proxy_connection.send(agent_message).await?;
+            proxy_connection_write.send(agent_message).await?;
         }
-
-        let (mut proxy_connection_write, proxy_connection_read) = proxy_connection.split();
 
         {
             let tunnel_id = tunnel_id.clone();

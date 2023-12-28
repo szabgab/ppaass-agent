@@ -128,11 +128,12 @@ impl ClientTransportHandshake for HttpClientTransport {
             payload_encryption.clone(),
         )?;
 
-        let mut proxy_connection = PROXY_CONNECTION_FACTORY.create_connection().await?;
+        let proxy_connection = PROXY_CONNECTION_FACTORY.create_proxy_connection().await?;
+        let (mut proxy_connection_write, mut proxy_connection_read) = proxy_connection.split();
         debug!("Client tcp connection [{src_address}] success to create proxy connection.",);
-        proxy_connection.send(tcp_init_request).await?;
+        proxy_connection_write.send(tcp_init_request).await?;
 
-        let proxy_message = proxy_connection
+        let proxy_message = proxy_connection_read
             .next()
             .await
             .ok_or(AgentError::Other(format!(
@@ -181,7 +182,8 @@ impl ClientTransportHandshake for HttpClientTransport {
                 client_tcp_stream,
                 src_address,
                 dst_address,
-                proxy_connection,
+                proxy_connection_write,
+                proxy_connection_read,
                 init_data,
                 payload_encryption,
             }),
