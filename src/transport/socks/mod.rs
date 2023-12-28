@@ -28,8 +28,8 @@ use self::message::{Socks5InitCommandResultStatus, Socks5UdpDataPacket};
 use crate::crypto::AgentServerPayloadEncryptionTypeSelector;
 use crate::{
     config::AGENT_CONFIG,
-    connection::PROXY_CONNECTION_FACTORY,
     error::AgentError,
+    proxy::PROXY_CONNECTION_FACTORY,
     transport::{
         socks::{
             codec::{Socks5AuthCommandContentCodec, Socks5InitCommandContentCodec},

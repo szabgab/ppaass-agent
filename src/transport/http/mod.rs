@@ -20,8 +20,8 @@ use url::Url;
 use crate::crypto::AgentServerPayloadEncryptionTypeSelector;
 use crate::{
     config::AGENT_CONFIG,
-    connection::PROXY_CONNECTION_FACTORY,
     error::AgentError,
+    proxy::PROXY_CONNECTION_FACTORY,
     transport::{
         http::codec::HttpCodec, ClientTransportDataRelayInfo, ClientTransportTcpDataRelay,
     },

@@ -1,8 +1,8 @@
 mod codec;
 pub mod config;
-pub(crate) mod connection;
 pub(crate) mod crypto;
 pub mod error;
+pub(crate) mod proxy;
 pub mod server;
 pub(crate) mod transport;
 
