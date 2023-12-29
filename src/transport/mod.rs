@@ -2,7 +2,9 @@ pub(crate) mod dispatcher;
 mod http;
 mod socks;
 
-use crate::{config::AGENT_CONFIG, error::AgentError};
+use crate::{config::AGENT_CONFIG, error::AgentError, trace};
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::Arc;
 use std::time::Duration;
 
 use bytes::{Bytes, BytesMut};
@@ -20,6 +22,7 @@ use scopeguard::ScopeGuard;
 
 use crate::codec::PpaassProxyEdgeCodec;
 
+use crate::trace::{TraceSubscriber, TransportTraceType};
 use crate::transport::http::HttpClientTransport;
 use crate::transport::socks::Socks5ClientTransport;
 use tokio::net::TcpStream;
@@ -46,6 +49,25 @@ pub(crate) struct ClientTransportTcpDataRelay<T: FnOnce(String) + Send + 'static
 pub(crate) enum ClientTransport {
     Socks5(Socks5ClientTransport),
     Http(HttpClientTransport),
+}
+
+fn generate_transport_number_scopeguard(
+    transport_number: Arc<AtomicU64>,
+    transport_trace_subscriber: Arc<TraceSubscriber>,
+    transport_id: &str,
+) -> ScopeGuard<String, impl FnOnce(String)> {
+    let transport_trace_subscriber = transport_trace_subscriber.clone();
+    let transport_number = transport_number.clone();
+    scopeguard::guard(transport_id.to_string(), move |transport_id| {
+        transport_number.fetch_sub(1, Ordering::Release);
+        trace::trace_transport(
+            transport_trace_subscriber,
+            TransportTraceType::DropTcp,
+            &transport_id,
+            transport_number,
+        );
+        debug!("Transport [{transport_id}] dropped in tcp process",)
+    })
 }
 
 pub async fn tcp_relay<T: FnOnce(String) + Send + 'static>(
@@ -103,11 +125,11 @@ pub async fn tcp_relay<T: FnOnce(String) + Send + 'static>(
             .forward(&mut proxy_connection_write)
             .await
             {
-                error!("Tunnel {transport_id} error happen when relay tcp data from client to proxy for destination [{dst_address}], error: {e:?}");
+                error!("Transport [{transport_id}] error happen when relay tcp data from client to proxy for destination [{dst_address}], error: {e:?}");
             }
             if let Err(e) = proxy_connection_write.close().await {
                 error!(
-                    "Tunnel {transport_id} fail to close proxy connection beccause of error: {e:?}"
+                    "Transport [{transport_id}] fail to close proxy connection beccause of error: {e:?}"
                 );
             };
         });
@@ -130,11 +152,11 @@ pub async fn tcp_relay<T: FnOnce(String) + Send + 'static>(
         .forward(&mut client_io_write)
         .await
         {
-            error!("Tunnel {transport_id} error happen when relay tcp data from proxy to client for destination [{dst_address}], error: {e:?}",);
+            error!("Transport [{transport_id}] error happen when relay tcp data from proxy to client for destination [{dst_address}], error: {e:?}",);
         }
         if let Err(e) = client_io_write.close().await {
             error!(
-                "Tunnel {transport_id} fail to close client connection beccause of error: {e:?}"
+                "Transport [{transport_id}] fail to close client connection beccause of error: {e:?}"
             );
         };
     });

@@ -30,7 +30,7 @@ use crate::{
     transport::{http::codec::HttpCodec, ClientTransportTcpDataRelay},
 };
 
-use super::tcp_relay;
+use super::{generate_transport_number_scopeguard, tcp_relay};
 
 const HTTPS_SCHEMA: &str = "https";
 const SCHEMA_SEP: &str = "://";
@@ -157,20 +157,11 @@ impl HttpClientTransport {
             }
         };
         transport_number.fetch_add(1, Ordering::Release);
-        let transport_number_scopeguard = {
-            let transport_trace_subscriber = transport_trace_subscriber.clone();
-            let transport_number = transport_number.clone();
-            scopeguard::guard(transport_id.clone(), move |transport_id| {
-                transport_number.fetch_sub(1, Ordering::Release);
-                trace::trace_transport(
-                    transport_trace_subscriber,
-                    TransportTraceType::DropTcp,
-                    &transport_id,
-                    transport_number,
-                );
-                debug!("Transport [{transport_id}] dropped in tcp process",)
-            })
-        };
+        let transport_number_scopeguard = generate_transport_number_scopeguard(
+            transport_number.clone(),
+            transport_trace_subscriber.clone(),
+            &transport_id,
+        );
         trace::trace_transport(
             transport_trace_subscriber,
             TransportTraceType::Create,
