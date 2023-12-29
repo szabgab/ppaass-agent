@@ -28,7 +28,6 @@ pretty-hex="0.4"
 rand = { version = "0.8", features = [] }
 bytecodec = "0.4"
 url = "2.4"
-async-trait = "0.1"
 httpcodec = "0.2"
 derive_more = "0.99"
 tokio-io-timeout = "1.2"

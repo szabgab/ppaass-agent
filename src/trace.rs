@@ -24,8 +24,10 @@ pub(crate) enum TransportTraceType {
     Create,
     #[display(fmt = "DROP_TCP")]
     DropTcp,
+    #[allow(unused)]
     #[display(fmt = "DROP_Udp")]
     DropUdp,
+    #[allow(unused)]
     #[display(fmt = "DROP_UNKNOWN")]
     DropUnknown,
 }
