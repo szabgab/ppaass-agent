@@ -4,8 +4,8 @@ use std::sync::Arc;
 
 use crate::config::AGENT_CONFIG;
 use crate::error::AgentError;
-use crate::transport::dispatcher::ClientTransportDispatcher;
-use crate::transport::{ClientTransport, TRANSPORT_MONITOR_FILE_PREFIX};
+use crate::transport::dispatcher::{ClientTransport, ClientTransportDispatcher};
+use crate::transport::TRANSPORT_MONITOR_FILE_PREFIX;
 
 use crate::trace;
 use crate::trace::TraceSubscriber;

@@ -23,8 +23,7 @@ use scopeguard::ScopeGuard;
 use crate::codec::PpaassProxyEdgeCodec;
 
 use crate::trace::{TraceSubscriber, TransportTraceType};
-use crate::transport::http::HttpClientTransport;
-use crate::transport::socks::Socks5ClientTransport;
+
 use tokio::net::TcpStream;
 use tokio_io_timeout::TimeoutStream;
 use tokio_stream::StreamExt as TokioStreamExt;
@@ -32,8 +31,7 @@ use tokio_util::codec::{BytesCodec, Framed};
 
 pub(crate) const TRANSPORT_MONITOR_FILE_PREFIX: &str = "transport";
 
-#[non_exhaustive]
-pub(crate) struct ClientTransportTcpDataRelay<T: FnOnce(String) + Send + 'static> {
+struct ClientTransportTcpDataRelay<T: FnOnce(String) + Send + 'static> {
     transport_id: String,
     client_tcp_stream: TcpStream,
     src_address: PpaassUnifiedAddress,
@@ -44,11 +42,6 @@ pub(crate) struct ClientTransportTcpDataRelay<T: FnOnce(String) + Send + 'static
     init_data: Option<Bytes>,
     payload_encryption: PpaassMessagePayloadEncryption,
     transport_number_scopeguard: ScopeGuard<String, T>,
-}
-
-pub(crate) enum ClientTransport {
-    Socks5(Socks5ClientTransport),
-    Http(HttpClientTransport),
 }
 
 fn generate_transport_number_scopeguard(
@@ -70,7 +63,7 @@ fn generate_transport_number_scopeguard(
     })
 }
 
-pub async fn tcp_relay<T: FnOnce(String) + Send + 'static>(
+async fn tcp_relay<T: FnOnce(String) + Send + 'static>(
     tcp_relay_info: ClientTransportTcpDataRelay<T>,
 ) -> Result<(), AgentError> {
     let user_token = AGENT_CONFIG.get_user_token();

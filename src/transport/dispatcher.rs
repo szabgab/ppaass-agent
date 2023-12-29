@@ -15,7 +15,10 @@ use crate::{
     SOCKS_V4, SOCKS_V5,
 };
 
-use super::ClientTransport;
+pub(crate) enum ClientTransport {
+    Socks5(Socks5ClientTransport),
+    Http(HttpClientTransport),
+}
 
 pub(crate) enum ClientProtocol {
     /// The client side choose to use HTTP proxy
