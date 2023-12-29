@@ -1,16 +1,28 @@
 use std::net::SocketAddr;
+use std::sync::atomic::AtomicU64;
+use std::sync::Arc;
 
 use crate::config::AGENT_CONFIG;
 use crate::error::AgentError;
 use crate::transport::dispatcher::ClientTransportDispatcher;
-use crate::transport::ClientTransportDataRelayInfo;
-use log::{debug, error, info};
-use tokio::net::{TcpListener, TcpStream};
+use crate::transport::{ClientTransport, TRANSPORT_MONITOR_FILE_PREFIX};
 
-#[derive(Debug, Default)]
-pub struct AgentServer {}
+use crate::trace;
+use crate::trace::TraceSubscriber;
+use tokio::net::{TcpListener, TcpStream};
+use tracing::{debug, error, info};
+
+#[derive(Debug)]
+pub struct AgentServer {
+    transport_number: Arc<AtomicU64>,
+}
 
 impl AgentServer {
+    pub(crate) fn new() -> Self {
+        Self {
+            transport_number: Arc::new(AtomicU64::new(0)),
+        }
+    }
     async fn accept_client_connection(
         tcp_listener: &TcpListener,
     ) -> Result<(TcpStream, SocketAddr), AgentError> {
@@ -27,6 +39,12 @@ impl AgentServer {
         };
         info!("Agent server start to serve request on address: {agent_server_bind_addr}.");
         let tcp_listener = TcpListener::bind(&agent_server_bind_addr).await?;
+        let (transport_trace_subscriber, _transport_trace_guard) =
+            trace::init_transport_tracing_subscriber(
+                TRANSPORT_MONITOR_FILE_PREFIX,
+                AGENT_CONFIG.get_transport_max_log_level(),
+            )?;
+        let transport_trace_subscriber = Arc::new(transport_trace_subscriber);
         loop {
             let (client_tcp_stream, client_socket_address) =
                 match Self::accept_client_connection(&tcp_listener).await {
@@ -42,32 +60,40 @@ impl AgentServer {
                 "Accept client tcp connection on address: {}",
                 client_socket_address
             );
-            tokio::spawn(async move {
-                if let Err(e) =
-                    Self::handle_client_connection(client_tcp_stream, client_socket_address).await
-                {
-                    error!("Fail to handle client connection [{client_socket_address}] because of error: {e:?}")
-                };
-            });
+
+            Self::handle_client_connection(
+                client_tcp_stream,
+                client_socket_address,
+                self.transport_number.clone().clone(),
+                transport_trace_subscriber.clone(),
+            );
         }
     }
 
-    async fn handle_client_connection(
+    fn handle_client_connection(
         client_tcp_stream: TcpStream,
         client_socket_address: SocketAddr,
-    ) -> Result<(), AgentError> {
-        let (handshake_info, handshake) =
-            ClientTransportDispatcher::dispatch(client_tcp_stream, client_socket_address).await?;
-        let (relay_info, relay) = handshake.handshake(handshake_info).await?;
-        match relay_info {
-            ClientTransportDataRelayInfo::Tcp(tcp_relay_info) => {
-                relay.tcp_relay(tcp_relay_info).await?
-            }
-            ClientTransportDataRelayInfo::Udp(udp_relay_info) => {
-                relay.udp_relay(udp_relay_info).await?
-            }
-        }
-        debug!("Client transport [{client_socket_address}] complete to serve.");
-        Ok(())
+        transport_number: Arc<AtomicU64>,
+        transport_trace_subscriber: Arc<TraceSubscriber>,
+    ) {
+        tokio::spawn(async move {
+            let client_transport =
+                ClientTransportDispatcher::dispatch(client_tcp_stream, client_socket_address)
+                    .await?;
+            match client_transport {
+                ClientTransport::Socks5(socks5_transport) => {
+                    socks5_transport
+                        .process(transport_number.clone(), transport_trace_subscriber.clone())
+                        .await?;
+                }
+                ClientTransport::Http(http_transport) => {
+                    http_transport
+                        .process(transport_number.clone(), transport_trace_subscriber.clone())
+                        .await?;
+                }
+            };
+            debug!("Client transport [{client_socket_address}] complete to serve.");
+            Ok::<(), AgentError>(())
+        });
     }
 }

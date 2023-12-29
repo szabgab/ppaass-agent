@@ -5,10 +5,10 @@ use crate::config::AGENT_CONFIG;
 
 use crate::error::AgentError;
 use lazy_static::lazy_static;
-use log::error;
 use ppaass_crypto::crypto::{RsaCrypto, RsaCryptoFetcher};
 use ppaass_crypto::error::CryptoError;
 use ppaass_protocol::message::values::encryption::PpaassMessagePayloadEncryptionSelector;
+use tracing::error;
 
 lazy_static! {
     pub(crate) static ref RSA_CRYPTO: AgentServerRsaCryptoFetcher =

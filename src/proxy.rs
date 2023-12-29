@@ -4,9 +4,9 @@ use std::{net::SocketAddr, time::Duration};
 use lazy_static::lazy_static;
 use tokio::{net::TcpStream, time::timeout};
 
-use log::{debug, error};
 use tokio_io_timeout::TimeoutStream;
 use tokio_util::codec::Framed;
+use tracing::{debug, error};
 
 use crate::codec::PpaassProxyEdgeCodec;
 use crate::{config::AGENT_CONFIG, crypto::RSA_CRYPTO, error::AgentError};

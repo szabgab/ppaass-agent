@@ -2,8 +2,8 @@ use std::{mem::size_of, net::SocketAddr};
 
 use bytes::BytesMut;
 use futures::StreamExt;
-use log::{debug, error};
-use ppaass_protocol::message::values::address::PpaassUnifiedAddress;
+
+use tracing::{debug, error};
 
 use tokio::net::TcpStream;
 use tokio_util::codec::{Decoder, Framed, FramedParts};
@@ -15,7 +15,7 @@ use crate::{
     SOCKS_V4, SOCKS_V5,
 };
 
-use super::ClientTransportHandshake;
+use super::ClientTransport;
 
 pub(crate) enum ClientProtocol {
     /// The client side choose to use HTTP proxy
@@ -47,26 +47,13 @@ impl Decoder for SwitchClientProtocolDecoder {
     }
 }
 
-pub(crate) struct ClientTransportHandshakeInfo {
-    pub client_tcp_stream: TcpStream,
-    pub src_address: PpaassUnifiedAddress,
-    pub initial_buf: BytesMut,
-    pub client_socket_addr: SocketAddr,
-}
-
 pub(crate) struct ClientTransportDispatcher;
 
 impl ClientTransportDispatcher {
     pub(crate) async fn dispatch(
         client_tcp_stream: TcpStream,
         client_socket_address: SocketAddr,
-    ) -> Result<
-        (
-            ClientTransportHandshakeInfo,
-            Box<dyn ClientTransportHandshake + Send + Sync>,
-        ),
-        AgentError,
-    > {
+    ) -> Result<ClientTransport, AgentError> {
         let mut client_message_framed = Framed::with_capacity(
             client_tcp_stream,
             SwitchClientProtocolDecoder,
@@ -95,15 +82,12 @@ impl ClientTransportDispatcher {
                     ..
                 } = client_message_framed.into_parts();
                 debug!("Client tcp connection [{client_socket_address}] begin to serve socks 5 protocol");
-                Ok((
-                    ClientTransportHandshakeInfo {
-                        client_tcp_stream,
-                        initial_buf,
-                        src_address: client_socket_address.into(),
-                        client_socket_addr: client_socket_address,
-                    },
-                    Box::new(Socks5ClientTransport),
-                ))
+                Ok(ClientTransport::Socks5(Socks5ClientTransport {
+                    client_tcp_stream,
+                    initial_buf,
+                    src_address: client_socket_address.into(),
+                    client_socket_addr: client_socket_address,
+                }))
             }
             ClientProtocol::Socks4 => {
                 // For socks4 protocol
@@ -120,15 +104,12 @@ impl ClientTransportDispatcher {
                 debug!(
                     "Client tcp connection [{client_socket_address}] begin to serve http protocol"
                 );
-                Ok((
-                    ClientTransportHandshakeInfo {
-                        client_tcp_stream,
-                        src_address: client_socket_address.into(),
-                        initial_buf,
-                        client_socket_addr: client_socket_address,
-                    },
-                    Box::new(HttpClientTransport),
-                ))
+                Ok(ClientTransport::Http(HttpClientTransport {
+                    client_tcp_stream,
+                    initial_buf,
+                    src_address: client_socket_address.into(),
+                    client_socket_addr: client_socket_address,
+                }))
             }
         }
     }

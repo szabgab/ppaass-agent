@@ -8,8 +8,8 @@ use bytes::{Buf, BufMut, BytesMut};
 use httpcodec::{BodyDecoder, BodyEncoder, Request, RequestDecoder, Response, ResponseEncoder};
 
 use crate::error::AgentError;
-use log::error;
 use tokio_util::codec::{Decoder, Encoder};
+use tracing::error;
 
 #[derive(Debug, Default)]
 pub(crate) struct HttpCodec {

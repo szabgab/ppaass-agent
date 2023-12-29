@@ -1,8 +1,8 @@
 use bytes::{Buf, BufMut, Bytes, BytesMut};
 
 use crate::error::AgentError;
-use log::error;
 use tokio_util::codec::{Decoder, Encoder};
+use tracing::error;
 
 use crate::SOCKS_V5;
 

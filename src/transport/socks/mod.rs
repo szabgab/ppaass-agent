@@ -2,13 +2,13 @@ mod codec;
 mod message;
 
 use std::net::{SocketAddr, ToSocketAddrs};
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::Arc;
 
-use async_trait::async_trait;
-use bytes::Bytes;
+use bytes::{Bytes, BytesMut};
 
 use futures::{SinkExt, StreamExt};
 
-use log::{debug, error, info};
 use ppaass_crypto::random_32_bytes;
 use ppaass_protocol::generator::PpaassMessageGenerator;
 use ppaass_protocol::message::payload::tcp::{ProxyTcpInitResult, ProxyTcpPayload};
@@ -16,6 +16,7 @@ use ppaass_protocol::message::payload::udp::ProxyUdpPayload;
 use ppaass_protocol::message::values::address::PpaassUnifiedAddress;
 use ppaass_protocol::message::values::encryption::PpaassMessagePayloadEncryptionSelector;
 use ppaass_protocol::message::{PpaassProxyMessage, PpaassProxyMessagePayload};
+use tracing::{debug, error, info};
 
 use tokio::{
     io::AsyncReadExt,
@@ -26,10 +27,12 @@ use tokio_util::codec::{Framed, FramedParts};
 use self::message::{Socks5InitCommandResultStatus, Socks5UdpDataPacket};
 
 use crate::crypto::AgentServerPayloadEncryptionTypeSelector;
+use crate::trace::{TraceSubscriber, TransportTraceType};
 use crate::{
     config::AGENT_CONFIG,
     error::AgentError,
     proxy::PROXY_CONNECTION_FACTORY,
+    trace,
     transport::{
         socks::{
             codec::{Socks5AuthCommandContentCodec, Socks5InitCommandContentCodec},
@@ -38,57 +41,30 @@ use crate::{
                 Socks5InitCommandType,
             },
         },
-        ClientTransportDataRelayInfo, ClientTransportHandshake, ClientTransportTcpDataRelay,
+        ClientTransportTcpDataRelay,
     },
 };
 
-use super::{
-    dispatcher::ClientTransportHandshakeInfo, ClientTransportRelay, ClientTransportUdpDataRelay,
-};
+use super::tcp_relay;
 
-pub(crate) struct Socks5ClientTransport;
-
-#[async_trait]
-impl ClientTransportRelay for Socks5ClientTransport {
-    async fn udp_relay(
-        &self,
-        udp_relay_info: ClientTransportUdpDataRelay,
-    ) -> Result<(), AgentError> {
-        let ClientTransportUdpDataRelay {
-            client_tcp_stream,
-            client_udp_restrict_address,
-            agent_udp_bind_socket,
-        } = udp_relay_info;
-        debug!("Agent begin to relay udp packet for client: {client_udp_restrict_address:?}");
-        tokio::select! {
-            udp_relay_tcp_check_result = Self::check_udp_relay_tcp_connection(client_tcp_stream)=>{
-                Ok(udp_relay_tcp_check_result?)
-            },
-            udp_relay_result = Self::relay_udp_data(client_udp_restrict_address,agent_udp_bind_socket)=>{
-                Ok(udp_relay_result?)
-            }
-        }
-    }
+pub(crate) struct Socks5ClientTransport {
+    pub client_tcp_stream: TcpStream,
+    pub src_address: PpaassUnifiedAddress,
+    pub initial_buf: BytesMut,
+    pub client_socket_addr: SocketAddr,
 }
 
-#[async_trait]
-impl ClientTransportHandshake for Socks5ClientTransport {
-    async fn handshake(
-        &self,
-        handshake_info: ClientTransportHandshakeInfo,
-    ) -> Result<
-        (
-            ClientTransportDataRelayInfo,
-            Box<dyn ClientTransportRelay + Send + Sync>,
-        ),
-        AgentError,
-    > {
-        let ClientTransportHandshakeInfo {
-            initial_buf,
-            src_address,
-            client_tcp_stream,
-            client_socket_addr,
-        } = handshake_info;
+impl Socks5ClientTransport {
+    pub(crate) async fn process(
+        self,
+        transport_number: Arc<AtomicU64>,
+        transport_trace_subscriber: Arc<TraceSubscriber>,
+    ) -> Result<(), AgentError> {
+        let initial_buf = self.initial_buf;
+        let src_address = self.src_address;
+        let client_tcp_stream = self.client_tcp_stream;
+        let client_socket_addr = self.client_socket_addr;
+
         let mut client_auth_framed_parts =
             FramedParts::new(client_tcp_stream, Socks5AuthCommandContentCodec);
         client_auth_framed_parts.read_buf = initial_buf;
@@ -126,21 +102,23 @@ impl ClientTransportHandshake for Socks5ClientTransport {
             socks5_init_command.request_type, socks5_init_command.dst_address
         );
 
-        let relay_info = match socks5_init_command.request_type {
+        match socks5_init_command.request_type {
             Socks5InitCommandType::Bind => {
                 Self::handle_bind_command(
                     src_address,
                     socks5_init_command.dst_address.into(),
                     socks5_init_framed,
+                    transport_number,
+                    transport_trace_subscriber,
                 )
-                .await?
+                .await
             }
             Socks5InitCommandType::UdpAssociate => {
                 Self::handle_udp_associate_command(
                     socks5_init_command.dst_address.into(),
                     socks5_init_framed,
                 )
-                .await?
+                .await
             }
             Socks5InitCommandType::Connect => {
                 Self::handle_connect_command(
@@ -148,16 +126,30 @@ impl ClientTransportHandshake for Socks5ClientTransport {
                     socks5_init_command.dst_address.into(),
                     client_socket_addr,
                     socks5_init_framed,
+                    transport_number,
+                    transport_trace_subscriber,
                 )
-                .await?
+                .await
             }
-        };
-
-        Ok((relay_info, Box::new(Self)))
+        }
     }
-}
 
-impl Socks5ClientTransport {
+    async fn start_udp_relay(
+        client_tcp_stream: TcpStream,
+        agent_udp_bind_socket: UdpSocket,
+        client_udp_restrict_address: PpaassUnifiedAddress,
+    ) -> Result<(), AgentError> {
+        debug!("Agent begin to relay udp packet for client: {client_udp_restrict_address:?}");
+        tokio::select! {
+            udp_relay_tcp_check_result = Self::check_udp_relay_tcp_connection(client_tcp_stream)=>{
+                Ok(udp_relay_tcp_check_result?)
+            },
+            udp_relay_result = Self::relay_udp_data(client_udp_restrict_address,agent_udp_bind_socket)=>{
+                Ok(udp_relay_result?)
+            }
+        }
+    }
+
     async fn check_udp_relay_tcp_connection(
         mut client_tcp_stream: TcpStream,
     ) -> Result<(), AgentError> {
@@ -204,7 +196,7 @@ impl Socks5ClientTransport {
             proxy_connection_write.send(agent_udp_message).await?;
             let proxy_udp_message = match proxy_connection_read.next().await {
                 Some(Ok(proxy_udp_message)) => proxy_udp_message,
-                Some(Err(e)) => return Err(e.into()),
+                Some(Err(e)) => return Err(e),
                 None => return Ok(()),
             };
             let PpaassProxyMessage {
@@ -238,14 +230,16 @@ impl Socks5ClientTransport {
         src_address: PpaassUnifiedAddress,
         dst_address: PpaassUnifiedAddress,
         mut socks5_init_framed: Framed<TcpStream, Socks5InitCommandContentCodec>,
-    ) -> Result<ClientTransportDataRelayInfo, AgentError> {
+        transport_number: Arc<AtomicU64>,
+        transport_trace_subscriber: Arc<TraceSubscriber>,
+    ) -> Result<(), AgentError> {
         unimplemented!("Still not implement the socks5 bind command")
     }
 
     async fn handle_udp_associate_command(
         client_udp_restrict_address: PpaassUnifiedAddress,
         mut socks5_init_framed: Framed<TcpStream, Socks5InitCommandContentCodec>,
-    ) -> Result<ClientTransportDataRelayInfo, AgentError> {
+    ) -> Result<(), AgentError> {
         debug!(
             "Client do socks5 udp associate on restrict address: {client_udp_restrict_address:?}"
         );
@@ -261,13 +255,14 @@ impl Socks5ClientTransport {
             io: client_tcp_stream,
             ..
         } = socks5_init_framed.into_parts();
-        Ok(ClientTransportDataRelayInfo::Udp(
-            ClientTransportUdpDataRelay {
-                agent_udp_bind_socket,
-                client_tcp_stream,
-                client_udp_restrict_address,
-            },
-        ))
+
+        Self::start_udp_relay(
+            client_tcp_stream,
+            agent_udp_bind_socket,
+            client_udp_restrict_address,
+        )
+        .await?;
+        Ok(())
     }
 
     async fn handle_connect_command(
@@ -275,7 +270,9 @@ impl Socks5ClientTransport {
         dst_address: PpaassUnifiedAddress,
         client_socket_addr: SocketAddr,
         mut socks5_init_framed: Framed<TcpStream, Socks5InitCommandContentCodec>,
-    ) -> Result<ClientTransportDataRelayInfo, AgentError> {
+        transport_number: Arc<AtomicU64>,
+        transport_trace_subscriber: Arc<TraceSubscriber>,
+    ) -> Result<(), AgentError> {
         match &dst_address {
             PpaassUnifiedAddress::Ip(socket_addr) => {
                 if socket_addr.ip().is_multicast() {
@@ -347,7 +344,7 @@ impl Socks5ClientTransport {
             Some(Ok(proxy_message)) => proxy_message,
             Some(Err(e)) => {
                 error!("Fail to receive tcp init response from proxy in socks5 agent because of error: {e:?}");
-                return Err(e.into());
+                return Err(e);
             }
         };
 
@@ -362,8 +359,8 @@ impl Socks5ClientTransport {
                 "Not a tcp init response for client: {client_socket_addr}"
             )));
         };
-        let tunnel_id = match result {
-            ProxyTcpInitResult::Success(tunnel_id) => tunnel_id,
+        let transport_id = match result {
+            ProxyTcpInitResult::Success(transport_id) => transport_id,
             ProxyTcpInitResult::Fail(reason) => {
                 error!("Client socks5 tcp connection [{src_address}] fail to initialize tcp connection with proxy because of reason: {reason:?}");
                 return Err(AgentError::Other(format!(
@@ -371,7 +368,29 @@ impl Socks5ClientTransport {
                 )));
             }
         };
-        debug!("Client socks5 tcp connection [{src_address}] success to initialize tcp connection with proxy on tunnel: {tunnel_id}");
+
+        transport_number.fetch_add(1, Ordering::Release);
+        let transport_number_scopeguard = {
+            let transport_trace_subscriber = transport_trace_subscriber.clone();
+            let transport_number = transport_number.clone();
+            scopeguard::guard(transport_id.clone(), move |transport_id| {
+                transport_number.fetch_sub(1, Ordering::Release);
+                trace::trace_transport(
+                    transport_trace_subscriber,
+                    TransportTraceType::DropTcp,
+                    &transport_id,
+                    transport_number,
+                );
+                debug!("Transport [{transport_id}] dropped in tcp process",)
+            })
+        };
+        trace::trace_transport(
+            transport_trace_subscriber,
+            TransportTraceType::Create,
+            &transport_id,
+            transport_number,
+        );
+        debug!("Client socks5 tcp connection [{src_address}] success to initialize tcp connection with proxy on tunnel: {transport_id}");
         let socks5_init_success_result = Socks5InitCommandResult::new(
             Socks5InitCommandResultStatus::Succeeded,
             Some(dst_address.clone().try_into()?),
@@ -384,17 +403,18 @@ impl Socks5ClientTransport {
         debug!(
             "Client tcp connection [{src_address}] success to do sock5 handshake begin to relay."
         );
-        Ok(ClientTransportDataRelayInfo::Tcp(
-            ClientTransportTcpDataRelay {
-                tunnel_id,
-                client_tcp_stream,
-                src_address,
-                dst_address,
-                proxy_connection_write,
-                proxy_connection_read,
-                init_data: None,
-                payload_encryption,
-            },
-        ))
+        tcp_relay(ClientTransportTcpDataRelay {
+            transport_id,
+            client_tcp_stream,
+            src_address,
+            dst_address,
+            proxy_connection_write,
+            proxy_connection_read,
+            init_data: None,
+            payload_encryption,
+            transport_number_scopeguard,
+        })
+        .await?;
+        Ok(())
     }
 }

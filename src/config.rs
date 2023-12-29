@@ -1,7 +1,9 @@
 use std::fs::read_to_string;
+use std::str::FromStr;
 
 use lazy_static::lazy_static;
 use serde_derive::{Deserialize, Serialize};
+use tracing::level_filters::LevelFilter;
 
 lazy_static! {
     pub static ref AGENT_CONFIG: AgentConfig = {
@@ -32,8 +34,8 @@ pub struct AgentConfig {
     client_receive_buffer_size: Option<usize>,
     proxy_send_buffer_size: Option<usize>,
     connect_to_proxy_timeout: Option<u64>,
-    proxy_relay_timeout: Option<u64>,
-    client_relay_timeout: Option<u64>,
+    max_log_level: Option<String>,
+    transport_max_log_level: Option<String>,
 }
 
 impl AgentConfig {
@@ -76,11 +78,13 @@ impl AgentConfig {
         self.client_receive_buffer_size.unwrap_or(1024 * 512)
     }
 
-    pub fn get_proxy_relay_timeout(&self) -> u64 {
-        self.proxy_relay_timeout.unwrap_or(20)
+    pub(crate) fn get_max_log_level(&self) -> LevelFilter {
+        let level = self.max_log_level.as_deref().unwrap_or("ERROR");
+        LevelFilter::from_str(level).unwrap_or(LevelFilter::ERROR)
     }
 
-    pub fn get_client_relay_timeout(&self) -> u64 {
-        self.client_relay_timeout.unwrap_or(20)
+    pub(crate) fn get_transport_max_log_level(&self) -> LevelFilter {
+        let level = self.transport_max_log_level.as_deref().unwrap_or("TRACE");
+        LevelFilter::from_str(level).unwrap_or(LevelFilter::TRACE)
     }
 }

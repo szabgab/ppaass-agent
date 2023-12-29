@@ -1,35 +1,36 @@
 pub(crate) mod codec;
 
-use async_trait::async_trait;
 use bytecodec::{bytes::BytesEncoder, EncodeExt};
+use std::net::SocketAddr;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::Arc;
 
-use bytes::Bytes;
-use derive_more::Constructor;
+use bytes::{Bytes, BytesMut};
+
 use futures::{SinkExt, StreamExt};
 use httpcodec::{BodyEncoder, HttpVersion, ReasonPhrase, RequestEncoder, Response, StatusCode};
-use log::{debug, error};
 use ppaass_crypto::random_32_bytes;
 use ppaass_protocol::generator::PpaassMessageGenerator;
 use ppaass_protocol::message::payload::tcp::{ProxyTcpInitResult, ProxyTcpPayload};
 use ppaass_protocol::message::values::address::PpaassUnifiedAddress;
 use ppaass_protocol::message::values::encryption::PpaassMessagePayloadEncryptionSelector;
 use ppaass_protocol::message::{PpaassProxyMessage, PpaassProxyMessagePayload};
+use tokio::net::TcpStream;
 use tokio_util::codec::{Framed, FramedParts};
+use tracing::{debug, error};
 use url::Url;
 
 use crate::crypto::AgentServerPayloadEncryptionTypeSelector;
+use crate::trace::{TraceSubscriber, TransportTraceType};
 use crate::{
     config::AGENT_CONFIG,
     error::AgentError,
     proxy::PROXY_CONNECTION_FACTORY,
-    transport::{
-        http::codec::HttpCodec, ClientTransportDataRelayInfo, ClientTransportTcpDataRelay,
-    },
+    trace,
+    transport::{http::codec::HttpCodec, ClientTransportTcpDataRelay},
 };
 
-use super::{
-    dispatcher::ClientTransportHandshakeInfo, ClientTransportHandshake, ClientTransportRelay,
-};
+use super::tcp_relay;
 
 const HTTPS_SCHEMA: &str = "https";
 const SCHEMA_SEP: &str = "://";
@@ -39,29 +40,23 @@ const HTTP_DEFAULT_PORT: u16 = 80;
 const OK_CODE: u16 = 200;
 const CONNECTION_ESTABLISHED: &str = "Connection Established";
 
-#[derive(Debug, Constructor)]
-pub(crate) struct HttpClientTransport;
+pub(crate) struct HttpClientTransport {
+    pub client_tcp_stream: TcpStream,
+    pub src_address: PpaassUnifiedAddress,
+    pub initial_buf: BytesMut,
+    pub client_socket_addr: SocketAddr,
+}
 
-impl ClientTransportRelay for HttpClientTransport {}
-
-#[async_trait]
-impl ClientTransportHandshake for HttpClientTransport {
-    async fn handshake(
-        &self,
-        handshake_info: ClientTransportHandshakeInfo,
-    ) -> Result<
-        (
-            ClientTransportDataRelayInfo,
-            Box<dyn ClientTransportRelay + Send + Sync>,
-        ),
-        AgentError,
-    > {
-        let ClientTransportHandshakeInfo {
-            initial_buf,
-            src_address,
-            client_tcp_stream,
-            client_socket_addr,
-        } = handshake_info;
+impl HttpClientTransport {
+    pub(crate) async fn process(
+        self,
+        transport_number: Arc<AtomicU64>,
+        transport_trace_subscriber: Arc<TraceSubscriber>,
+    ) -> Result<(), AgentError> {
+        let initial_buf = self.initial_buf;
+        let src_address = self.src_address;
+        let client_tcp_stream = self.client_tcp_stream;
+        let client_socket_addr = self.client_socket_addr;
         let mut framed_parts = FramedParts::new(client_tcp_stream, HttpCodec::default());
         framed_parts.read_buf = initial_buf;
         let mut http_framed = Framed::from_parts(framed_parts);
@@ -110,7 +105,7 @@ impl ClientTransportHandshake for HttpClientTransport {
             .to_string();
         if target_host.eq("0.0.0.1") || target_host.eq("127.0.0.1") {
             return Err(AgentError::Other(format!(
-                "0.0.0.1 or 127.0.0.1 is not a valid destination address"
+                "0.0.0.1 or 127.0.0.1 is not a valid destination address: {target_host}"
             )));
         }
         let dst_address = PpaassUnifiedAddress::Domain {
@@ -152,8 +147,8 @@ impl ClientTransportHandshake for HttpClientTransport {
                 "Not a tcp init response for client {client_socket_addr}."
             )));
         };
-        let tunnel_id = match result {
-            ProxyTcpInitResult::Success(tunnel_id) => tunnel_id,
+        let transport_id = match result {
+            ProxyTcpInitResult::Success(transport_id) => transport_id,
             ProxyTcpInitResult::Fail(reason) => {
                 error!("Client http tcp connection [{src_address}] fail to initialize tcp connection with proxy because of reason: {reason:?}");
                 return Err(AgentError::Other(format!(
@@ -161,7 +156,28 @@ impl ClientTransportHandshake for HttpClientTransport {
                 )));
             }
         };
-        debug!("Client http tcp connection [{src_address}] success to initialize tcp connection with proxy on tunnel: {tunnel_id}");
+        transport_number.fetch_add(1, Ordering::Release);
+        let transport_number_scopeguard = {
+            let transport_trace_subscriber = transport_trace_subscriber.clone();
+            let transport_number = transport_number.clone();
+            scopeguard::guard(transport_id.clone(), move |transport_id| {
+                transport_number.fetch_sub(1, Ordering::Release);
+                trace::trace_transport(
+                    transport_trace_subscriber,
+                    TransportTraceType::DropTcp,
+                    &transport_id,
+                    transport_number,
+                );
+                debug!("Transport [{transport_id}] dropped in tcp process",)
+            })
+        };
+        trace::trace_transport(
+            transport_trace_subscriber,
+            TransportTraceType::Create,
+            &transport_id,
+            transport_number,
+        );
+        debug!("Client http tcp connection [{src_address}] success to initialize tcp connection with proxy on tunnel: {transport_id}");
         if init_data.is_none() {
             //For https proxy
             let http_connect_success_response = Response::new(
@@ -176,18 +192,17 @@ impl ClientTransportHandshake for HttpClientTransport {
             io: client_tcp_stream,
             ..
         } = http_framed.into_parts();
-        Ok((
-            ClientTransportDataRelayInfo::Tcp(ClientTransportTcpDataRelay {
-                tunnel_id,
-                client_tcp_stream,
-                src_address,
-                dst_address,
-                proxy_connection_write,
-                proxy_connection_read,
-                init_data,
-                payload_encryption,
-            }),
-            Box::new(Self),
-        ))
+        tcp_relay(ClientTransportTcpDataRelay {
+            transport_id,
+            client_tcp_stream,
+            src_address,
+            dst_address,
+            proxy_connection_write,
+            proxy_connection_read,
+            init_data,
+            payload_encryption,
+            transport_number_scopeguard,
+        })
+        .await
     }
 }
