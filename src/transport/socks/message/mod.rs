@@ -120,7 +120,7 @@ impl TryFrom<Socks5Address> for SocketAddr {
             Socks5Address::Domain(host, port) => {
                 let address_string = format!("{host}:{port}");
                 let addresses = address_string.to_socket_addrs()?.collect::<Vec<_>>();
-                let result = addresses.get(0).ok_or(AgentError::Other(format!(
+                let result = addresses.first().ok_or(AgentError::Other(format!(
                     "Can not convert domain to socket address: {address_string}"
                 )))?;
                 Ok(*result)

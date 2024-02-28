@@ -1,7 +1,5 @@
 #![cfg(test)]
-use std::sync::Arc;
-
-use anyhow::Result;
+use std::{error::Error, sync::Arc};
 
 #[derive(Debug)]
 struct Left(u32);
@@ -30,7 +28,7 @@ impl Drop for Test {
 }
 
 #[test]
-fn test() -> Result<()> {
+fn test() -> Result<(), Box<dyn Error>> {
     println!("#### Begin test");
     let test = Test {
         left: Arc::new(Left(1)),

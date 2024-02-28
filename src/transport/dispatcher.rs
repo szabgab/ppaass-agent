@@ -66,7 +66,7 @@ impl ClientTransportDispatcher {
             Some(Ok(client_protocol)) => client_protocol,
             Some(Err(e)) => {
                 error!("Fail to read protocol from client io because of error: {e:?}");
-                return Err(e.into());
+                return Err(e);
             }
             None => {
                 error!("Fail to read protocol from client io because of nothing to read.");

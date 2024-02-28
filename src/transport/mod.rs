@@ -105,6 +105,7 @@ async fn tcp_relay<T: FnOnce(String) + Send + 'static>(
         let dst_address = dst_address.clone();
         tokio::spawn(async move {
             // Forward client data to proxy
+            let client_io_read = TokioStreamExt::fuse(client_io_read);
             if let Err(e) = TokioStreamExt::map_while(client_io_read, |client_message| {
                 let client_message = client_message.ok()?;
                 let tcp_data = PpaassMessageGenerator::generate_agent_tcp_data_message(
@@ -130,6 +131,7 @@ async fn tcp_relay<T: FnOnce(String) + Send + 'static>(
 
     tokio::spawn(async move {
         let _transport_number_scopeguard = transport_number_scopeguard;
+        let proxy_connection_read = TokioStreamExt::fuse(proxy_connection_read);
         if let Err(e) = TokioStreamExt::map_while(proxy_connection_read, |proxy_message| {
             let proxy_message = proxy_message.ok()?;
             let PpaassProxyMessage {
