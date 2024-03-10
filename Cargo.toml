@@ -8,7 +8,15 @@ version = "0.1.0"
 [[bin]]
 name = "ppaass-agent"
 
+[build]
+rustflags = ["-C", "target-cpu=native"]
+
+[profile.release]
+codegen-units = 1
+lto = "fat"
+
 [dependencies]
+mimalloc="0.1.39"
 ppaass-protocol="0.1"
 ppaass-codec="0.1"
 ppaass-crypto="0.1"

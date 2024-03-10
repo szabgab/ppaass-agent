@@ -18,6 +18,9 @@ use {config::AGENT_CONFIG, server::AgentServer};
 const LOG_FILE_NAME_PREFIX: &str = "ppaass-agent";
 const AGENT_RUNTIME_NAME: &str = "AGENT";
 
+#[global_allocator]
+static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
+
 fn main() -> Result<(), AgentError> {
     let (subscriber, _tracing_guard) = trace::init_global_tracing_subscriber(
         LOG_FILE_NAME_PREFIX,
