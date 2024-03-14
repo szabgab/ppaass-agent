@@ -1,27 +1,17 @@
 use std::net::SocketAddr;
-use std::sync::atomic::AtomicU64;
-use std::sync::Arc;
 
 use crate::config::AGENT_CONFIG;
 use crate::error::AgentError;
 use crate::transport::dispatcher::{ClientTransport, ClientTransportDispatcher};
-use crate::transport::TRANSPORT_MONITOR_FILE_PREFIX;
-
-use crate::trace;
-use crate::trace::TraceSubscriber;
 use tokio::net::{TcpListener, TcpStream};
 use tracing::{debug, error, info};
 
 #[derive(Debug)]
-pub struct AgentServer {
-    transport_number: Arc<AtomicU64>,
-}
+pub struct AgentServer {}
 
 impl AgentServer {
     pub(crate) fn new() -> Self {
-        Self {
-            transport_number: Arc::new(AtomicU64::new(0)),
-        }
+        Self {}
     }
     async fn accept_client_connection(
         tcp_listener: &TcpListener,
@@ -39,12 +29,7 @@ impl AgentServer {
         };
         info!("Agent server start to serve request on address: {agent_server_bind_addr}.");
         let tcp_listener = TcpListener::bind(&agent_server_bind_addr).await?;
-        let (transport_trace_subscriber, _transport_trace_guard) =
-            trace::init_transport_tracing_subscriber(
-                TRANSPORT_MONITOR_FILE_PREFIX,
-                AGENT_CONFIG.get_transport_max_log_level(),
-            )?;
-        let transport_trace_subscriber = Arc::new(transport_trace_subscriber);
+
         loop {
             let (client_tcp_stream, client_socket_address) =
                 match Self::accept_client_connection(&tcp_listener).await {
@@ -61,35 +46,21 @@ impl AgentServer {
                 client_socket_address
             );
 
-            Self::handle_client_connection(
-                client_tcp_stream,
-                client_socket_address,
-                self.transport_number.clone().clone(),
-                transport_trace_subscriber.clone(),
-            );
+            Self::handle_client_connection(client_tcp_stream, client_socket_address);
         }
     }
 
-    fn handle_client_connection(
-        client_tcp_stream: TcpStream,
-        client_socket_address: SocketAddr,
-        transport_number: Arc<AtomicU64>,
-        transport_trace_subscriber: Arc<TraceSubscriber>,
-    ) {
+    fn handle_client_connection(client_tcp_stream: TcpStream, client_socket_address: SocketAddr) {
         tokio::spawn(async move {
             let client_transport =
                 ClientTransportDispatcher::dispatch(client_tcp_stream, client_socket_address)
                     .await?;
             match client_transport {
                 ClientTransport::Socks5(socks5_transport) => {
-                    socks5_transport
-                        .process(transport_number.clone(), transport_trace_subscriber.clone())
-                        .await?;
+                    socks5_transport.process().await?;
                 }
                 ClientTransport::Http(http_transport) => {
-                    http_transport
-                        .process(transport_number.clone(), transport_trace_subscriber.clone())
-                        .await?;
+                    http_transport.process().await?;
                 }
             };
             debug!("Client transport [{client_socket_address}] complete to serve.");

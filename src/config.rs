@@ -82,9 +82,4 @@ impl AgentConfig {
         let level = self.max_log_level.as_deref().unwrap_or("ERROR");
         LevelFilter::from_str(level).unwrap_or(LevelFilter::ERROR)
     }
-
-    pub(crate) fn get_transport_max_log_level(&self) -> LevelFilter {
-        let level = self.transport_max_log_level.as_deref().unwrap_or("TRACE");
-        LevelFilter::from_str(level).unwrap_or(LevelFilter::TRACE)
-    }
 }

@@ -42,4 +42,3 @@ tokio-io-timeout = "1.2"
 tracing = "0.1"
 tracing-subscriber = { version="0.3", features = ["chrono", "json"] }
 tracing-appender = "0.2"
-scopeguard = "1.2"

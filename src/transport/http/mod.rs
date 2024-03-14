@@ -2,8 +2,6 @@ pub(crate) mod codec;
 
 use bytecodec::{bytes::BytesEncoder, EncodeExt};
 use std::net::SocketAddr;
-use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::Arc;
 
 use bytes::{Bytes, BytesMut};
 
@@ -21,16 +19,15 @@ use tracing::{debug, error};
 use url::Url;
 
 use crate::crypto::AgentServerPayloadEncryptionTypeSelector;
-use crate::trace::{TraceSubscriber, TransportTraceType};
+
 use crate::{
     config::AGENT_CONFIG,
     error::AgentError,
     proxy::PROXY_CONNECTION_FACTORY,
-    trace,
     transport::{http::codec::HttpCodec, ClientTransportTcpDataRelay},
 };
 
-use super::{generate_transport_number_scopeguard, tcp_relay};
+use super::tcp_relay;
 
 const HTTPS_SCHEMA: &str = "https";
 const SCHEMA_SEP: &str = "://";
@@ -48,11 +45,7 @@ pub(crate) struct HttpClientTransport {
 }
 
 impl HttpClientTransport {
-    pub(crate) async fn process(
-        self,
-        transport_number: Arc<AtomicU64>,
-        transport_trace_subscriber: Arc<TraceSubscriber>,
-    ) -> Result<(), AgentError> {
+    pub(crate) async fn process(self) -> Result<(), AgentError> {
         let initial_buf = self.initial_buf;
         let src_address = self.src_address;
         let client_tcp_stream = self.client_tcp_stream;
@@ -156,18 +149,6 @@ impl HttpClientTransport {
                 )));
             }
         };
-        transport_number.fetch_add(1, Ordering::Release);
-        let transport_number_scopeguard = generate_transport_number_scopeguard(
-            transport_number.clone(),
-            transport_trace_subscriber.clone(),
-            &transport_id,
-        );
-        trace::trace_transport(
-            transport_trace_subscriber,
-            TransportTraceType::Create,
-            &transport_id,
-            transport_number,
-        );
         debug!("Client http tcp connection [{src_address}] success to initialize tcp connection with proxy on tunnel: {transport_id}");
         if init_data.is_none() {
             //For https proxy
@@ -192,7 +173,6 @@ impl HttpClientTransport {
             proxy_connection_read,
             init_data,
             payload_encryption,
-            transport_number_scopeguard,
         })
         .await
     }

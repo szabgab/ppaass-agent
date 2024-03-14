@@ -2,8 +2,6 @@ mod codec;
 mod message;
 
 use std::net::{SocketAddr, ToSocketAddrs};
-use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::Arc;
 
 use bytes::{Bytes, BytesMut};
 
@@ -28,12 +26,11 @@ use tokio_util::codec::{Framed, FramedParts};
 use self::message::{Socks5InitCommandResultStatus, Socks5UdpDataPacket};
 
 use crate::crypto::AgentServerPayloadEncryptionTypeSelector;
-use crate::trace::{TraceSubscriber, TransportTraceType};
+
 use crate::{
     config::AGENT_CONFIG,
     error::AgentError,
     proxy::PROXY_CONNECTION_FACTORY,
-    trace,
     transport::{
         socks::{
             codec::{Socks5AuthCommandContentCodec, Socks5InitCommandContentCodec},
@@ -46,7 +43,7 @@ use crate::{
     },
 };
 
-use super::{generate_transport_number_scopeguard, tcp_relay};
+use super::tcp_relay;
 
 pub(crate) struct Socks5ClientTransport {
     pub client_tcp_stream: TcpStream,
@@ -56,11 +53,7 @@ pub(crate) struct Socks5ClientTransport {
 }
 
 impl Socks5ClientTransport {
-    pub(crate) async fn process(
-        self,
-        transport_number: Arc<AtomicU64>,
-        transport_trace_subscriber: Arc<TraceSubscriber>,
-    ) -> Result<(), AgentError> {
+    pub(crate) async fn process(self) -> Result<(), AgentError> {
         let initial_buf = self.initial_buf;
         let src_address = self.src_address;
         let client_tcp_stream = self.client_tcp_stream;
@@ -109,8 +102,6 @@ impl Socks5ClientTransport {
                     src_address,
                     socks5_init_command.dst_address.into(),
                     socks5_init_framed,
-                    transport_number,
-                    transport_trace_subscriber,
                 )
                 .await
             }
@@ -127,8 +118,6 @@ impl Socks5ClientTransport {
                     socks5_init_command.dst_address.into(),
                     client_socket_addr,
                     socks5_init_framed,
-                    transport_number,
-                    transport_trace_subscriber,
                 )
                 .await
             }
@@ -231,8 +220,6 @@ impl Socks5ClientTransport {
         src_address: PpaassUnifiedAddress,
         dst_address: PpaassUnifiedAddress,
         mut socks5_init_framed: Framed<TcpStream, Socks5InitCommandContentCodec>,
-        transport_number: Arc<AtomicU64>,
-        transport_trace_subscriber: Arc<TraceSubscriber>,
     ) -> Result<(), AgentError> {
         unimplemented!("Still not implement the socks5 bind command")
     }
@@ -271,8 +258,6 @@ impl Socks5ClientTransport {
         dst_address: PpaassUnifiedAddress,
         client_socket_addr: SocketAddr,
         mut socks5_init_framed: Framed<TcpStream, Socks5InitCommandContentCodec>,
-        transport_number: Arc<AtomicU64>,
-        transport_trace_subscriber: Arc<TraceSubscriber>,
     ) -> Result<(), AgentError> {
         match &dst_address {
             PpaassUnifiedAddress::Ip(socket_addr) => {
@@ -370,18 +355,6 @@ impl Socks5ClientTransport {
             }
         };
 
-        transport_number.fetch_add(1, Ordering::Release);
-        let transport_number_scopeguard = generate_transport_number_scopeguard(
-            transport_number.clone(),
-            transport_trace_subscriber.clone(),
-            &transport_id,
-        );
-        trace::trace_transport(
-            transport_trace_subscriber,
-            TransportTraceType::Create,
-            &transport_id,
-            transport_number,
-        );
         debug!("Client socks5 tcp connection [{src_address}] success to initialize tcp connection with proxy on tunnel: {transport_id}");
         let socks5_init_success_result = Socks5InitCommandResult::new(
             Socks5InitCommandResultStatus::Succeeded,
@@ -404,7 +377,6 @@ impl Socks5ClientTransport {
             proxy_connection_read,
             init_data: None,
             payload_encryption,
-            transport_number_scopeguard,
         })
         .await?;
         Ok(())
