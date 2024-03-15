@@ -1,18 +1,24 @@
-use crate::crypto::AgentServerRsaCryptoFetcher;
 use crate::error::AgentError;
 use bytes::BytesMut;
 use ppaass_codec::codec::agent::PpaassAgentMessageEncoder;
 use ppaass_codec::codec::proxy::PpaassProxyMessageDecoder;
+use ppaass_crypto::crypto::RsaCryptoFetcher;
 use ppaass_protocol::message::{PpaassAgentMessage, PpaassProxyMessage};
 use tokio_util::codec::{Decoder, Encoder};
 
-pub(crate) struct PpaassProxyEdgeCodec {
-    encoder: PpaassAgentMessageEncoder<AgentServerRsaCryptoFetcher>,
-    decoder: PpaassProxyMessageDecoder<AgentServerRsaCryptoFetcher>,
+pub(crate) struct PpaassProxyEdgeCodec<F>
+where
+    F: RsaCryptoFetcher,
+{
+    encoder: PpaassAgentMessageEncoder<F>,
+    decoder: PpaassProxyMessageDecoder<F>,
 }
 
-impl PpaassProxyEdgeCodec {
-    pub fn new(compress: bool, rsa_crypto_fetcher: AgentServerRsaCryptoFetcher) -> Self {
+impl<F> PpaassProxyEdgeCodec<F>
+where
+    F: RsaCryptoFetcher + Clone,
+{
+    pub fn new(compress: bool, rsa_crypto_fetcher: F) -> Self {
         Self {
             encoder: PpaassAgentMessageEncoder::new(compress, rsa_crypto_fetcher.clone()),
             decoder: PpaassProxyMessageDecoder::new(rsa_crypto_fetcher),
@@ -20,7 +26,10 @@ impl PpaassProxyEdgeCodec {
     }
 }
 
-impl Encoder<PpaassAgentMessage> for PpaassProxyEdgeCodec {
+impl<F> Encoder<PpaassAgentMessage> for PpaassProxyEdgeCodec<F>
+where
+    F: RsaCryptoFetcher,
+{
     type Error = AgentError;
 
     fn encode(&mut self, item: PpaassAgentMessage, dst: &mut BytesMut) -> Result<(), Self::Error> {
@@ -30,7 +39,10 @@ impl Encoder<PpaassAgentMessage> for PpaassProxyEdgeCodec {
     }
 }
 
-impl Decoder for PpaassProxyEdgeCodec {
+impl<F> Decoder for PpaassProxyEdgeCodec<F>
+where
+    F: RsaCryptoFetcher,
+{
     type Item = PpaassProxyMessage;
     type Error = AgentError;
 

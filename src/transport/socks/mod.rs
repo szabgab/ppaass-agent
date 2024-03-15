@@ -7,7 +7,7 @@ use bytes::{Bytes, BytesMut};
 
 use futures::{SinkExt, StreamExt};
 
-use ppaass_crypto::random_32_bytes;
+use ppaass_crypto::{crypto::RsaCryptoFetcher, random_32_bytes};
 use ppaass_protocol::generator::PpaassMessageGenerator;
 use ppaass_protocol::message::payload::tcp::{ProxyTcpInitResult, ProxyTcpPayload};
 use ppaass_protocol::message::payload::udp::ProxyUdpPayload;
@@ -25,12 +25,13 @@ use tokio_util::codec::{Framed, FramedParts};
 
 use self::message::{Socks5InitCommandResultStatus, Socks5UdpDataPacket};
 
-use crate::crypto::AgentServerPayloadEncryptionTypeSelector;
+use crate::{
+    config::AgentConfig, crypto::AgentServerPayloadEncryptionTypeSelector,
+    proxy::ProxyConnectionFactory,
+};
 
 use crate::{
-    config::AGENT_CONFIG,
     error::AgentError,
-    proxy::PROXY_CONNECTION_FACTORY,
     transport::{
         socks::{
             codec::{Socks5AuthCommandContentCodec, Socks5InitCommandContentCodec},
@@ -45,14 +46,43 @@ use crate::{
 
 use super::tcp_relay;
 
-pub(crate) struct Socks5ClientTransport {
-    pub client_tcp_stream: TcpStream,
-    pub src_address: PpaassUnifiedAddress,
-    pub initial_buf: BytesMut,
-    pub client_socket_addr: SocketAddr,
+pub(crate) struct Socks5ClientTransport<'config, 'crypto, 'factory, F>
+where
+    F: RsaCryptoFetcher + Send + Sync + 'static,
+{
+    client_tcp_stream: TcpStream,
+    src_address: PpaassUnifiedAddress,
+    initial_buf: BytesMut,
+    client_socket_addr: SocketAddr,
+    config: &'config AgentConfig,
+    proxy_connection_factory: &'factory ProxyConnectionFactory<'config, 'crypto, F>,
 }
 
-impl Socks5ClientTransport {
+impl<'config, 'crypto, 'factory, F> Socks5ClientTransport<'config, 'crypto, 'factory, F>
+where
+    F: RsaCryptoFetcher + Send + Sync + 'static,
+    'config: 'static,
+    'crypto: 'static,
+    'factory: 'static,
+{
+    pub(crate) fn new(
+        client_tcp_stream: TcpStream,
+        src_address: PpaassUnifiedAddress,
+        initial_buf: BytesMut,
+        client_socket_addr: SocketAddr,
+        config: &'config AgentConfig,
+        proxy_connection_factory: &'factory ProxyConnectionFactory<'config, 'crypto, F>,
+    ) -> Self {
+        Self {
+            client_tcp_stream,
+            src_address,
+            initial_buf,
+            client_socket_addr,
+            config,
+            proxy_connection_factory,
+        }
+    }
+
     pub(crate) async fn process(self) -> Result<(), AgentError> {
         let initial_buf = self.initial_buf;
         let src_address = self.src_address;
@@ -107,6 +137,8 @@ impl Socks5ClientTransport {
             }
             Socks5InitCommandType::UdpAssociate => {
                 Self::handle_udp_associate_command(
+                    self.config,
+                    self.proxy_connection_factory,
                     socks5_init_command.dst_address.into(),
                     socks5_init_framed,
                 )
@@ -114,6 +146,8 @@ impl Socks5ClientTransport {
             }
             Socks5InitCommandType::Connect => {
                 Self::handle_connect_command(
+                    self.config,
+                    self.proxy_connection_factory,
                     src_address,
                     socks5_init_command.dst_address.into(),
                     client_socket_addr,
@@ -125,6 +159,8 @@ impl Socks5ClientTransport {
     }
 
     async fn start_udp_relay(
+        config: &'config AgentConfig,
+        proxy_connection_factory: &'factory ProxyConnectionFactory<'config, 'crypto, F>,
         client_tcp_stream: TcpStream,
         agent_udp_bind_socket: UdpSocket,
         client_udp_restrict_address: PpaassUnifiedAddress,
@@ -134,7 +170,7 @@ impl Socks5ClientTransport {
             udp_relay_tcp_check_result = Self::check_udp_relay_tcp_connection(client_tcp_stream)=>{
                 Ok(udp_relay_tcp_check_result?)
             },
-            udp_relay_result = Self::relay_udp_data(client_udp_restrict_address,agent_udp_bind_socket)=>{
+            udp_relay_result = Self::relay_udp_data(config,proxy_connection_factory,  client_udp_restrict_address,agent_udp_bind_socket)=>{
                 Ok(udp_relay_result?)
             }
         }
@@ -152,11 +188,14 @@ impl Socks5ClientTransport {
             }
         }
     }
+
     async fn relay_udp_data(
+        config: &'config AgentConfig,
+        proxy_connection_factory: &'factory ProxyConnectionFactory<'config, 'crypto, F>,
         client_udp_restrict_address: PpaassUnifiedAddress,
         agent_udp_bind_socket: UdpSocket,
     ) -> Result<(), AgentError> {
-        let user_token = AGENT_CONFIG.get_user_token();
+        let user_token = config.get_user_token();
         let payload_encryption =
             AgentServerPayloadEncryptionTypeSelector::select(user_token, Some(random_32_bytes()));
         loop {
@@ -181,7 +220,7 @@ impl Socks5ClientTransport {
                 client_to_dst_socks5_udp_packet.data,
                 true,
             )?;
-            let proxy_connection = PROXY_CONNECTION_FACTORY.create_proxy_connection().await?;
+            let proxy_connection = proxy_connection_factory.create_proxy_connection().await?;
             let (mut proxy_connection_write, mut proxy_connection_read) = proxy_connection.split();
             proxy_connection_write.send(agent_udp_message).await?;
             let proxy_udp_message = match proxy_connection_read.next().await {
@@ -225,6 +264,8 @@ impl Socks5ClientTransport {
     }
 
     async fn handle_udp_associate_command(
+        config: &'config AgentConfig,
+        proxy_connection_factory: &'factory ProxyConnectionFactory<'config, 'crypto, F>,
         client_udp_restrict_address: PpaassUnifiedAddress,
         mut socks5_init_framed: Framed<TcpStream, Socks5InitCommandContentCodec>,
     ) -> Result<(), AgentError> {
@@ -245,6 +286,8 @@ impl Socks5ClientTransport {
         } = socks5_init_framed.into_parts();
 
         Self::start_udp_relay(
+            config,
+            proxy_connection_factory,
             client_tcp_stream,
             agent_udp_bind_socket,
             client_udp_restrict_address,
@@ -254,6 +297,8 @@ impl Socks5ClientTransport {
     }
 
     async fn handle_connect_command(
+        config: &'config AgentConfig,
+        proxy_connection_factory: &ProxyConnectionFactory<'config, 'crypto, F>,
         src_address: PpaassUnifiedAddress,
         dst_address: PpaassUnifiedAddress,
         client_socket_addr: SocketAddr,
@@ -303,7 +348,7 @@ impl Socks5ClientTransport {
             }
         };
 
-        let user_token = AGENT_CONFIG.get_user_token();
+        let user_token = config.get_user_token();
         let payload_encryption =
             AgentServerPayloadEncryptionTypeSelector::select(user_token, Some(random_32_bytes()));
         let tcp_init_request = PpaassMessageGenerator::generate_agent_tcp_init_message(
@@ -312,7 +357,7 @@ impl Socks5ClientTransport {
             dst_address.clone(),
             payload_encryption.clone(),
         )?;
-        let proxy_connection = PROXY_CONNECTION_FACTORY.create_proxy_connection().await?;
+        let proxy_connection = proxy_connection_factory.create_proxy_connection().await?;
         let (mut proxy_connection_write, mut proxy_connection_read) = proxy_connection.split();
         debug!("Client tcp connection [{src_address}] success create proxy connection.",);
         if let Err(e) = proxy_connection_write.send(tcp_init_request).await {
@@ -368,16 +413,19 @@ impl Socks5ClientTransport {
         debug!(
             "Client tcp connection [{src_address}] success to do sock5 handshake begin to relay."
         );
-        tcp_relay(ClientTransportTcpDataRelay {
-            transport_id,
-            client_tcp_stream,
-            src_address,
-            dst_address,
-            proxy_connection_write,
-            proxy_connection_read,
-            init_data: None,
-            payload_encryption,
-        })
+        tcp_relay(
+            config,
+            ClientTransportTcpDataRelay {
+                transport_id,
+                client_tcp_stream,
+                src_address,
+                dst_address,
+                proxy_connection_write,
+                proxy_connection_read,
+                init_data: None,
+                payload_encryption,
+            },
+        )
         .await?;
         Ok(())
     }

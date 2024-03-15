@@ -7,7 +7,7 @@ use bytes::{Bytes, BytesMut};
 
 use futures::{SinkExt, StreamExt};
 use httpcodec::{BodyEncoder, HttpVersion, ReasonPhrase, RequestEncoder, Response, StatusCode};
-use ppaass_crypto::random_32_bytes;
+use ppaass_crypto::{crypto::RsaCryptoFetcher, random_32_bytes};
 use ppaass_protocol::generator::PpaassMessageGenerator;
 use ppaass_protocol::message::payload::tcp::{ProxyTcpInitResult, ProxyTcpPayload};
 use ppaass_protocol::message::values::address::PpaassUnifiedAddress;
@@ -18,12 +18,13 @@ use tokio_util::codec::{Framed, FramedParts};
 use tracing::{debug, error};
 use url::Url;
 
-use crate::crypto::AgentServerPayloadEncryptionTypeSelector;
+use crate::{
+    config::AgentConfig, crypto::AgentServerPayloadEncryptionTypeSelector,
+    proxy::ProxyConnectionFactory,
+};
 
 use crate::{
-    config::AGENT_CONFIG,
     error::AgentError,
-    proxy::PROXY_CONNECTION_FACTORY,
     transport::{http::codec::HttpCodec, ClientTransportTcpDataRelay},
 };
 
@@ -37,14 +38,43 @@ const HTTP_DEFAULT_PORT: u16 = 80;
 const OK_CODE: u16 = 200;
 const CONNECTION_ESTABLISHED: &str = "Connection Established";
 
-pub(crate) struct HttpClientTransport {
-    pub client_tcp_stream: TcpStream,
-    pub src_address: PpaassUnifiedAddress,
-    pub initial_buf: BytesMut,
-    pub client_socket_addr: SocketAddr,
+pub(crate) struct HttpClientTransport<'config, 'crypto, 'factory, F>
+where
+    F: RsaCryptoFetcher + Send + Sync + 'static,
+{
+    client_tcp_stream: TcpStream,
+    src_address: PpaassUnifiedAddress,
+    initial_buf: BytesMut,
+    client_socket_addr: SocketAddr,
+    config: &'config AgentConfig,
+    proxy_connection_factory: &'factory ProxyConnectionFactory<'config, 'crypto, F>,
 }
 
-impl HttpClientTransport {
+impl<'config, 'crypto, 'factory, F> HttpClientTransport<'config, 'crypto, 'factory, F>
+where
+    F: RsaCryptoFetcher + Send + Sync + 'static,
+    'config: 'static,
+    'crypto: 'static,
+    'factory: 'static,
+{
+    pub(crate) fn new(
+        client_tcp_stream: TcpStream,
+        src_address: PpaassUnifiedAddress,
+        initial_buf: BytesMut,
+        client_socket_addr: SocketAddr,
+        config: &'config AgentConfig,
+        proxy_connection_factory: &'factory ProxyConnectionFactory<'config, 'crypto, F>,
+    ) -> Self {
+        Self {
+            client_tcp_stream,
+            src_address,
+            initial_buf,
+            client_socket_addr,
+            config,
+            proxy_connection_factory,
+        }
+    }
+
     pub(crate) async fn process(self) -> Result<(), AgentError> {
         let initial_buf = self.initial_buf;
         let src_address = self.src_address;
@@ -106,7 +136,7 @@ impl HttpClientTransport {
             port: target_port,
         };
 
-        let user_token = AGENT_CONFIG.get_user_token();
+        let user_token = self.config.get_user_token();
         let payload_encryption =
             AgentServerPayloadEncryptionTypeSelector::select(user_token, Some(random_32_bytes()));
         let tcp_init_request = PpaassMessageGenerator::generate_agent_tcp_init_message(
@@ -116,7 +146,10 @@ impl HttpClientTransport {
             payload_encryption.clone(),
         )?;
 
-        let proxy_connection = PROXY_CONNECTION_FACTORY.create_proxy_connection().await?;
+        let proxy_connection = self
+            .proxy_connection_factory
+            .create_proxy_connection()
+            .await?;
         let (mut proxy_connection_write, mut proxy_connection_read) = proxy_connection.split();
         debug!("Client tcp connection [{src_address}] success to create proxy connection.",);
         proxy_connection_write.send(tcp_init_request).await?;
@@ -164,16 +197,19 @@ impl HttpClientTransport {
             io: client_tcp_stream,
             ..
         } = http_framed.into_parts();
-        tcp_relay(ClientTransportTcpDataRelay {
-            transport_id,
-            client_tcp_stream,
-            src_address,
-            dst_address,
-            proxy_connection_write,
-            proxy_connection_read,
-            init_data,
-            payload_encryption,
-        })
+        tcp_relay(
+            self.config,
+            ClientTransportTcpDataRelay {
+                transport_id,
+                client_tcp_stream,
+                src_address,
+                dst_address,
+                proxy_connection_write,
+                proxy_connection_read,
+                init_data,
+                payload_encryption,
+            },
+        )
         .await
     }
 }

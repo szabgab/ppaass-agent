@@ -2,7 +2,7 @@ pub(crate) mod dispatcher;
 mod http;
 mod socks;
 
-use crate::{config::AGENT_CONFIG, error::AgentError};
+use crate::{config::AgentConfig, error::AgentError};
 
 use std::time::Duration;
 
@@ -10,6 +10,7 @@ use bytes::{Bytes, BytesMut};
 use futures_util::stream::{SplitSink, SplitStream};
 use futures_util::{SinkExt, StreamExt};
 
+use ppaass_crypto::crypto::RsaCryptoFetcher;
 use tracing::{debug, error};
 
 use ppaass_protocol::generator::PpaassMessageGenerator;
@@ -25,20 +26,30 @@ use tokio_io_timeout::TimeoutStream;
 use tokio_stream::StreamExt as TokioStreamExt;
 use tokio_util::codec::{BytesCodec, Framed};
 
-struct ClientTransportTcpDataRelay {
+struct ClientTransportTcpDataRelay<F>
+where
+    F: RsaCryptoFetcher,
+{
     transport_id: String,
     client_tcp_stream: TcpStream,
     src_address: PpaassUnifiedAddress,
     dst_address: PpaassUnifiedAddress,
     proxy_connection_write:
-        SplitSink<Framed<TimeoutStream<TcpStream>, PpaassProxyEdgeCodec>, PpaassAgentMessage>,
-    proxy_connection_read: SplitStream<Framed<TimeoutStream<TcpStream>, PpaassProxyEdgeCodec>>,
+        SplitSink<Framed<TimeoutStream<TcpStream>, PpaassProxyEdgeCodec<F>>, PpaassAgentMessage>,
+    proxy_connection_read: SplitStream<Framed<TimeoutStream<TcpStream>, PpaassProxyEdgeCodec<F>>>,
     init_data: Option<Bytes>,
     payload_encryption: PpaassMessagePayloadEncryption,
 }
 
-async fn tcp_relay(tcp_relay_info: ClientTransportTcpDataRelay) -> Result<(), AgentError> {
-    let user_token = AGENT_CONFIG.get_user_token();
+async fn tcp_relay<'config, F>(
+    config: &'config AgentConfig,
+    tcp_relay_info: ClientTransportTcpDataRelay<F>,
+) -> Result<(), AgentError>
+where
+    F: RsaCryptoFetcher + Send + Sync + 'static,
+    'config: 'static,
+{
+    let user_token = config.get_user_token();
     let ClientTransportTcpDataRelay {
         transport_id,
         client_tcp_stream,
@@ -58,7 +69,7 @@ async fn tcp_relay(tcp_relay_info: ClientTransportTcpDataRelay) -> Result<(), Ag
     let client_io_framed = Framed::with_capacity(
         client_tcp_stream,
         BytesCodec::new(),
-        AGENT_CONFIG.get_client_receive_buffer_size(),
+        config.get_client_receive_buffer_size(),
     );
     let (mut client_io_write, client_io_read) = client_io_framed.split::<BytesMut>();
 

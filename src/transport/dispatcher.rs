@@ -3,21 +3,26 @@ use std::{mem::size_of, net::SocketAddr};
 use bytes::BytesMut;
 use futures::StreamExt;
 
+use ppaass_crypto::crypto::RsaCryptoFetcher;
 use tracing::{debug, error};
 
 use tokio::net::TcpStream;
 use tokio_util::codec::{Decoder, Framed, FramedParts};
 
 use crate::{
-    config::AGENT_CONFIG,
+    config::AgentConfig,
     error::AgentError,
+    proxy::ProxyConnectionFactory,
     transport::{http::HttpClientTransport, socks::Socks5ClientTransport},
     SOCKS_V4, SOCKS_V5,
 };
 
-pub(crate) enum ClientTransport {
-    Socks5(Socks5ClientTransport),
-    Http(HttpClientTransport),
+pub(crate) enum ClientTransport<'config, 'crypto, 'factory, F>
+where
+    F: RsaCryptoFetcher + Send + Sync + 'static,
+{
+    Socks5(Socks5ClientTransport<'config, 'crypto, 'factory, F>),
+    Http(HttpClientTransport<'config, 'crypto, 'factory, F>),
 }
 
 pub(crate) enum ClientProtocol {
@@ -50,17 +55,40 @@ impl Decoder for SwitchClientProtocolDecoder {
     }
 }
 
-pub(crate) struct ClientTransportDispatcher;
+pub(crate) struct ClientTransportDispatcher<'config, 'crypto, 'factory, F>
+where
+    F: RsaCryptoFetcher + Send + Sync + 'static,
+{
+    config: &'config AgentConfig,
+    proxy_connection_factory: &'factory ProxyConnectionFactory<'config, 'crypto, F>,
+}
 
-impl ClientTransportDispatcher {
+impl<'config, 'crypto, 'factory, F> ClientTransportDispatcher<'config, 'crypto, 'factory, F>
+where
+    F: RsaCryptoFetcher + Send + Sync + 'static,
+    'config: 'static,
+    'crypto: 'static,
+    'factory: 'static,
+{
+    pub(crate) fn new(
+        config: &'config AgentConfig,
+        proxy_connection_factory: &'factory ProxyConnectionFactory<'config, 'crypto, F>,
+    ) -> Self {
+        Self {
+            config,
+            proxy_connection_factory,
+        }
+    }
+
     pub(crate) async fn dispatch(
+        &self,
         client_tcp_stream: TcpStream,
         client_socket_address: SocketAddr,
-    ) -> Result<ClientTransport, AgentError> {
+    ) -> Result<ClientTransport<'config, 'crypto, 'factory, F>, AgentError> {
         let mut client_message_framed = Framed::with_capacity(
             client_tcp_stream,
             SwitchClientProtocolDecoder,
-            AGENT_CONFIG.get_client_receive_buffer_size(),
+            self.config.get_client_receive_buffer_size(),
         );
         let client_protocol = match client_message_framed.next().await {
             Some(Ok(client_protocol)) => client_protocol,
@@ -85,12 +113,14 @@ impl ClientTransportDispatcher {
                     ..
                 } = client_message_framed.into_parts();
                 debug!("Client tcp connection [{client_socket_address}] begin to serve socks 5 protocol");
-                Ok(ClientTransport::Socks5(Socks5ClientTransport {
+                Ok(ClientTransport::Socks5(Socks5ClientTransport::new(
                     client_tcp_stream,
+                    client_socket_address.into(),
                     initial_buf,
-                    src_address: client_socket_address.into(),
-                    client_socket_addr: client_socket_address,
-                }))
+                    client_socket_address,
+                    self.config,
+                    self.proxy_connection_factory,
+                )))
             }
             ClientProtocol::Socks4 => {
                 // For socks4 protocol
@@ -107,12 +137,14 @@ impl ClientTransportDispatcher {
                 debug!(
                     "Client tcp connection [{client_socket_address}] begin to serve http protocol"
                 );
-                Ok(ClientTransport::Http(HttpClientTransport {
+                Ok(ClientTransport::Http(HttpClientTransport::new(
                     client_tcp_stream,
+                    client_socket_address.into(),
                     initial_buf,
-                    src_address: client_socket_address.into(),
-                    client_socket_addr: client_socket_address,
-                }))
+                    client_socket_address,
+                    self.config,
+                    self.proxy_connection_factory,
+                )))
             }
         }
     }
