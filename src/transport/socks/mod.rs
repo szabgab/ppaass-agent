@@ -22,6 +22,7 @@ use tokio::{
     io::AsyncReadExt,
     net::{TcpStream, UdpSocket},
 };
+
 use tokio_util::codec::{Framed, FramedParts};
 
 use self::message::{Socks5InitCommandResultStatus, Socks5UdpDataPacket};
@@ -168,7 +169,7 @@ where
             udp_relay_tcp_check_result = Self::check_udp_relay_tcp_connection(client_tcp_stream)=>{
                 Ok(udp_relay_tcp_check_result?)
             },
-            udp_relay_result = Self::relay_udp_data(config,proxy_connection_factory,  client_udp_restrict_address,agent_udp_bind_socket)=>{
+            udp_relay_result = Self::relay_udp_data(config,proxy_connection_factory,client_udp_restrict_address,agent_udp_bind_socket)=>{
                 Ok(udp_relay_result?)
             }
         }

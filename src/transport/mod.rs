@@ -2,9 +2,9 @@ pub(crate) mod dispatcher;
 mod http;
 mod socks;
 
-use crate::{config::AgentConfig, error::AgentError};
-
 use std::time::Duration;
+
+use crate::{config::AgentConfig, error::AgentError};
 
 use bytes::{Bytes, BytesMut};
 use futures_util::stream::{SplitSink, SplitStream};
@@ -59,12 +59,16 @@ where
         init_data,
         payload_encryption,
     } = tcp_relay_info;
-    let mut client_tcp_stream = TimeoutStream::new(client_tcp_stream);
-    client_tcp_stream.set_write_timeout(Some(Duration::from_secs(120)));
-    client_tcp_stream.set_read_timeout(Some(Duration::from_secs(120)));
     debug!(
         "Agent going to relay tcp data from source: {src_address} to destination: {dst_address}"
     );
+    let mut client_tcp_stream = TimeoutStream::new(client_tcp_stream);
+    client_tcp_stream.set_read_timeout(Some(Duration::from_secs(
+        config.client_connection_read_timeout(),
+    )));
+    client_tcp_stream.set_write_timeout(Some(Duration::from_secs(
+        config.client_connection_write_timeout(),
+    )));
     let client_io_framed = Framed::with_capacity(
         client_tcp_stream,
         BytesCodec::new(),
