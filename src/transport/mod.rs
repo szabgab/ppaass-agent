@@ -41,15 +41,14 @@ where
     payload_encryption: PpaassMessagePayloadEncryption,
 }
 
-async fn tcp_relay<'config, F>(
-    config: &'config AgentConfig,
+async fn tcp_relay<F>(
+    config: &AgentConfig,
     tcp_relay_info: ClientTransportTcpDataRelay<F>,
 ) -> Result<(), AgentError>
 where
     F: RsaCryptoFetcher + Send + Sync + 'static,
-    'config: 'static,
 {
-    let user_token = config.get_user_token();
+    let user_token = config.user_token().to_string();
     let ClientTransportTcpDataRelay {
         transport_id,
         client_tcp_stream,
@@ -69,13 +68,13 @@ where
     let client_io_framed = Framed::with_capacity(
         client_tcp_stream,
         BytesCodec::new(),
-        config.get_client_receive_buffer_size(),
+        config.client_receive_buffer_size(),
     );
     let (mut client_io_write, client_io_read) = client_io_framed.split::<BytesMut>();
 
     if let Some(init_data) = init_data {
         let agent_message = PpaassMessageGenerator::generate_agent_tcp_data_message(
-            user_token.to_string(),
+            user_token.clone(),
             payload_encryption.clone(),
             init_data,
         )?;

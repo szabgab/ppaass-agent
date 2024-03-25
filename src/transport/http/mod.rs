@@ -2,6 +2,7 @@ pub(crate) mod codec;
 
 use bytecodec::{bytes::BytesEncoder, EncodeExt};
 use std::net::SocketAddr;
+use std::sync::Arc;
 
 use bytes::{Bytes, BytesMut};
 
@@ -38,7 +39,7 @@ const HTTP_DEFAULT_PORT: u16 = 80;
 const OK_CODE: u16 = 200;
 const CONNECTION_ESTABLISHED: &str = "Connection Established";
 
-pub(crate) struct HttpClientTransport<'config, 'crypto, 'factory, F>
+pub(crate) struct HttpClientTransport<F>
 where
     F: RsaCryptoFetcher + Send + Sync + 'static,
 {
@@ -46,24 +47,21 @@ where
     src_address: PpaassUnifiedAddress,
     initial_buf: BytesMut,
     client_socket_addr: SocketAddr,
-    config: &'config AgentConfig,
-    proxy_connection_factory: &'factory ProxyConnectionFactory<'config, 'crypto, F>,
+    config: Arc<AgentConfig>,
+    proxy_connection_factory: Arc<ProxyConnectionFactory<F>>,
 }
 
-impl<'config, 'crypto, 'factory, F> HttpClientTransport<'config, 'crypto, 'factory, F>
+impl<F> HttpClientTransport<F>
 where
     F: RsaCryptoFetcher + Send + Sync + 'static,
-    'config: 'static,
-    'crypto: 'static,
-    'factory: 'static,
 {
     pub(crate) fn new(
         client_tcp_stream: TcpStream,
         src_address: PpaassUnifiedAddress,
         initial_buf: BytesMut,
         client_socket_addr: SocketAddr,
-        config: &'config AgentConfig,
-        proxy_connection_factory: &'factory ProxyConnectionFactory<'config, 'crypto, F>,
+        config: Arc<AgentConfig>,
+        proxy_connection_factory: Arc<ProxyConnectionFactory<F>>,
     ) -> Self {
         Self {
             client_tcp_stream,
@@ -136,7 +134,7 @@ where
             port: target_port,
         };
 
-        let user_token = self.config.get_user_token();
+        let user_token = self.config.user_token();
         let payload_encryption =
             AgentServerPayloadEncryptionTypeSelector::select(user_token, Some(random_32_bytes()));
         let tcp_init_request = PpaassMessageGenerator::generate_agent_tcp_init_message(
@@ -198,7 +196,7 @@ where
             ..
         } = http_framed.into_parts();
         tcp_relay(
-            self.config,
+            &self.config,
             ClientTransportTcpDataRelay {
                 transport_id,
                 client_tcp_stream,

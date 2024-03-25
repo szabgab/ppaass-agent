@@ -2,6 +2,7 @@ mod codec;
 mod message;
 
 use std::net::{SocketAddr, ToSocketAddrs};
+use std::sync::Arc;
 
 use bytes::{Bytes, BytesMut};
 
@@ -46,7 +47,7 @@ use crate::{
 
 use super::tcp_relay;
 
-pub(crate) struct Socks5ClientTransport<'config, 'crypto, 'factory, F>
+pub(crate) struct Socks5ClientTransport<F>
 where
     F: RsaCryptoFetcher + Send + Sync + 'static,
 {
@@ -54,24 +55,21 @@ where
     src_address: PpaassUnifiedAddress,
     initial_buf: BytesMut,
     client_socket_addr: SocketAddr,
-    config: &'config AgentConfig,
-    proxy_connection_factory: &'factory ProxyConnectionFactory<'config, 'crypto, F>,
+    config: Arc<AgentConfig>,
+    proxy_connection_factory: Arc<ProxyConnectionFactory<F>>,
 }
 
-impl<'config, 'crypto, 'factory, F> Socks5ClientTransport<'config, 'crypto, 'factory, F>
+impl<F> Socks5ClientTransport<F>
 where
     F: RsaCryptoFetcher + Send + Sync + 'static,
-    'config: 'static,
-    'crypto: 'static,
-    'factory: 'static,
 {
     pub(crate) fn new(
         client_tcp_stream: TcpStream,
         src_address: PpaassUnifiedAddress,
         initial_buf: BytesMut,
         client_socket_addr: SocketAddr,
-        config: &'config AgentConfig,
-        proxy_connection_factory: &'factory ProxyConnectionFactory<'config, 'crypto, F>,
+        config: Arc<AgentConfig>,
+        proxy_connection_factory: Arc<ProxyConnectionFactory<F>>,
     ) -> Self {
         Self {
             client_tcp_stream,
@@ -137,8 +135,8 @@ where
             }
             Socks5InitCommandType::UdpAssociate => {
                 Self::handle_udp_associate_command(
-                    self.config,
-                    self.proxy_connection_factory,
+                    &self.config,
+                    &self.proxy_connection_factory,
                     socks5_init_command.dst_address.into(),
                     socks5_init_framed,
                 )
@@ -146,8 +144,8 @@ where
             }
             Socks5InitCommandType::Connect => {
                 Self::handle_connect_command(
-                    self.config,
-                    self.proxy_connection_factory,
+                    &self.config,
+                    &self.proxy_connection_factory,
                     src_address,
                     socks5_init_command.dst_address.into(),
                     client_socket_addr,
@@ -159,8 +157,8 @@ where
     }
 
     async fn start_udp_relay(
-        config: &'config AgentConfig,
-        proxy_connection_factory: &'factory ProxyConnectionFactory<'config, 'crypto, F>,
+        config: &AgentConfig,
+        proxy_connection_factory: &ProxyConnectionFactory<F>,
         client_tcp_stream: TcpStream,
         agent_udp_bind_socket: UdpSocket,
         client_udp_restrict_address: PpaassUnifiedAddress,
@@ -190,12 +188,12 @@ where
     }
 
     async fn relay_udp_data(
-        config: &'config AgentConfig,
-        proxy_connection_factory: &'factory ProxyConnectionFactory<'config, 'crypto, F>,
+        config: &AgentConfig,
+        proxy_connection_factory: &ProxyConnectionFactory<F>,
         client_udp_restrict_address: PpaassUnifiedAddress,
         agent_udp_bind_socket: UdpSocket,
     ) -> Result<(), AgentError> {
-        let user_token = config.get_user_token();
+        let user_token = config.user_token();
         let payload_encryption =
             AgentServerPayloadEncryptionTypeSelector::select(user_token, Some(random_32_bytes()));
         loop {
@@ -264,8 +262,8 @@ where
     }
 
     async fn handle_udp_associate_command(
-        config: &'config AgentConfig,
-        proxy_connection_factory: &'factory ProxyConnectionFactory<'config, 'crypto, F>,
+        config: &AgentConfig,
+        proxy_connection_factory: &ProxyConnectionFactory<F>,
         client_udp_restrict_address: PpaassUnifiedAddress,
         mut socks5_init_framed: Framed<TcpStream, Socks5InitCommandContentCodec>,
     ) -> Result<(), AgentError> {
@@ -297,8 +295,8 @@ where
     }
 
     async fn handle_connect_command(
-        config: &'config AgentConfig,
-        proxy_connection_factory: &ProxyConnectionFactory<'config, 'crypto, F>,
+        config: &AgentConfig,
+        proxy_connection_factory: &ProxyConnectionFactory<F>,
         src_address: PpaassUnifiedAddress,
         dst_address: PpaassUnifiedAddress,
         client_socket_addr: SocketAddr,
@@ -348,7 +346,7 @@ where
             }
         };
 
-        let user_token = config.get_user_token();
+        let user_token = config.user_token();
         let payload_encryption =
             AgentServerPayloadEncryptionTypeSelector::select(user_token, Some(random_32_bytes()));
         let tcp_init_request = PpaassMessageGenerator::generate_agent_tcp_init_message(

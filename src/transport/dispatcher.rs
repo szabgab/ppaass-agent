@@ -1,3 +1,4 @@
+use std::sync::Arc;
 use std::{mem::size_of, net::SocketAddr};
 
 use bytes::BytesMut;
@@ -17,12 +18,12 @@ use crate::{
     SOCKS_V4, SOCKS_V5,
 };
 
-pub(crate) enum ClientTransport<'config, 'crypto, 'factory, F>
+pub(crate) enum ClientTransport<F>
 where
     F: RsaCryptoFetcher + Send + Sync + 'static,
 {
-    Socks5(Socks5ClientTransport<'config, 'crypto, 'factory, F>),
-    Http(HttpClientTransport<'config, 'crypto, 'factory, F>),
+    Socks5(Socks5ClientTransport<F>),
+    Http(HttpClientTransport<F>),
 }
 
 pub(crate) enum ClientProtocol {
@@ -55,28 +56,25 @@ impl Decoder for SwitchClientProtocolDecoder {
     }
 }
 
-pub(crate) struct ClientTransportDispatcher<'config, 'crypto, 'factory, F>
+pub(crate) struct ClientTransportDispatcher<F>
 where
     F: RsaCryptoFetcher + Send + Sync + 'static,
 {
-    config: &'config AgentConfig,
-    proxy_connection_factory: &'factory ProxyConnectionFactory<'config, 'crypto, F>,
+    config: Arc<AgentConfig>,
+    proxy_connection_factory: Arc<ProxyConnectionFactory<F>>,
 }
 
-impl<'config, 'crypto, 'factory, F> ClientTransportDispatcher<'config, 'crypto, 'factory, F>
+impl<F> ClientTransportDispatcher<F>
 where
     F: RsaCryptoFetcher + Send + Sync + 'static,
-    'config: 'static,
-    'crypto: 'static,
-    'factory: 'static,
 {
     pub(crate) fn new(
-        config: &'config AgentConfig,
-        proxy_connection_factory: &'factory ProxyConnectionFactory<'config, 'crypto, F>,
+        config: Arc<AgentConfig>,
+        proxy_connection_factory: ProxyConnectionFactory<F>,
     ) -> Self {
         Self {
             config,
-            proxy_connection_factory,
+            proxy_connection_factory: Arc::new(proxy_connection_factory),
         }
     }
 
@@ -84,11 +82,11 @@ where
         &self,
         client_tcp_stream: TcpStream,
         client_socket_address: SocketAddr,
-    ) -> Result<ClientTransport<'config, 'crypto, 'factory, F>, AgentError> {
+    ) -> Result<ClientTransport<F>, AgentError> {
         let mut client_message_framed = Framed::with_capacity(
             client_tcp_stream,
             SwitchClientProtocolDecoder,
-            self.config.get_client_receive_buffer_size(),
+            self.config.client_receive_buffer_size(),
         );
         let client_protocol = match client_message_framed.next().await {
             Some(Ok(client_protocol)) => client_protocol,
@@ -118,8 +116,8 @@ where
                     client_socket_address.into(),
                     initial_buf,
                     client_socket_address,
-                    self.config,
-                    self.proxy_connection_factory,
+                    self.config.clone(),
+                    self.proxy_connection_factory.clone(),
                 )))
             }
             ClientProtocol::Socks4 => {
@@ -142,8 +140,8 @@ where
                     client_socket_address.into(),
                     initial_buf,
                     client_socket_address,
-                    self.config,
-                    self.proxy_connection_factory,
+                    self.config.clone(),
+                    self.proxy_connection_factory.clone(),
                 )))
             }
         }

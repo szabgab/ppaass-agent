@@ -1,24 +1,18 @@
-use crate::error::AgentError;
-
 use std::path::Path;
-use tracing::level_filters::LevelFilter;
 
-use tracing_appender::non_blocking::{NonBlocking, WorkerGuard};
-use tracing_subscriber::fmt::format::{DefaultFields, Format, Full};
+use tracing::level_filters::LevelFilter;
+use tracing_appender::non_blocking::WorkerGuard;
 use tracing_subscriber::fmt::time::ChronoUtc;
-use tracing_subscriber::fmt::Subscriber;
+
+use crate::error::AgentError;
 
 const TRACE_FILE_DIR_PATH: &str = "log";
 
-pub(crate) type TraceSubscriber =
-    Subscriber<DefaultFields, Format<Full, ChronoUtc>, LevelFilter, NonBlocking>;
+const LOG_FILE_NAME_PREFIX: &str = "ppaass-agent";
 
-pub fn init_global_tracing_subscriber(
-    trace_file_name_prefix: &str,
-    max_level: LevelFilter,
-) -> Result<(TraceSubscriber, WorkerGuard), AgentError> {
+pub fn init_global_tracing_subscriber(max_level: LevelFilter) -> Result<WorkerGuard, AgentError> {
     let (trace_file_appender, trace_appender_guard) = tracing_appender::non_blocking(
-        tracing_appender::rolling::daily(Path::new(TRACE_FILE_DIR_PATH), trace_file_name_prefix),
+        tracing_appender::rolling::daily(Path::new(TRACE_FILE_DIR_PATH), LOG_FILE_NAME_PREFIX),
     );
     let subscriber = tracing_subscriber::fmt()
         .with_max_level(max_level)
@@ -30,5 +24,10 @@ pub fn init_global_tracing_subscriber(
         .with_timer(ChronoUtc::rfc_3339())
         .with_ansi(false)
         .finish();
-    Ok((subscriber, trace_appender_guard))
+    tracing::subscriber::set_global_default(subscriber).map_err(|e| {
+        AgentError::Other(format!(
+            "Fail to initialize tracing system because of error: {e:?}"
+        ))
+    })?;
+    Ok(trace_appender_guard)
 }

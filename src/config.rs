@@ -1,9 +1,6 @@
-use std::path::{Path, PathBuf};
-use std::str::FromStr;
+use std::path::PathBuf;
 
 use clap::{command, Parser};
-
-use tracing::level_filters::LevelFilter;
 
 #[derive(Parser)]
 #[command(
@@ -15,7 +12,7 @@ pub struct AgentConfig {
     /// The user token
     #[arg(short, long, default_value = "user1")]
     user_token: String,
-    /// Whether use ip v6
+    /// Whether you use ip v6
     #[arg(short = '6', long, default_value = "false")]
     ipv6: bool,
     /// Port of the ppaass proxy
@@ -46,49 +43,91 @@ pub struct AgentConfig {
     /// The max log level
     #[arg(long, default_value = "ERROR")]
     max_log_level: String,
+    /// The timeout for proxy connection read
+    #[arg(long, default_value = "120")]
+    proxy_connection_read_timeout: u64,
+    /// The timeout for proxy connection write
+    #[arg(long, default_value = "120")]
+    proxy_connection_write_timeout: u64,
 }
 
 impl AgentConfig {
-    pub fn get_user_token(&self) -> &str {
+    pub fn set_user_token(&mut self, user_token: String) {
+        self.user_token = user_token;
+    }
+    pub fn set_ipv6(&mut self, ipv6: bool) {
+        self.ipv6 = ipv6;
+    }
+    pub fn set_port(&mut self, port: u16) {
+        self.port = port;
+    }
+    pub fn set_rsa_dir(&mut self, rsa_dir: PathBuf) {
+        self.rsa_dir = rsa_dir;
+    }
+    pub fn set_worker_thread_number(&mut self, worker_thread_number: usize) {
+        self.worker_thread_number = worker_thread_number;
+    }
+    pub fn set_compress(&mut self, compress: bool) {
+        self.compress = compress;
+    }
+    pub fn set_proxy_addresses(&mut self, proxy_addresses: Vec<String>) {
+        self.proxy_addresses = proxy_addresses;
+    }
+    pub fn set_client_receive_buffer_size(&mut self, client_receive_buffer_size: usize) {
+        self.client_receive_buffer_size = client_receive_buffer_size;
+    }
+    pub fn set_proxy_send_buffer_size(&mut self, proxy_send_buffer_size: usize) {
+        self.proxy_send_buffer_size = proxy_send_buffer_size;
+    }
+    pub fn set_connect_to_proxy_timeout(&mut self, connect_to_proxy_timeout: u64) {
+        self.connect_to_proxy_timeout = connect_to_proxy_timeout;
+    }
+    pub fn set_max_log_level(&mut self, max_log_level: String) {
+        self.max_log_level = max_log_level;
+    }
+    pub fn set_proxy_connection_read_timeout(&mut self, proxy_connection_read_timeout: u64) {
+        self.proxy_connection_read_timeout = proxy_connection_read_timeout;
+    }
+    pub fn set_proxy_connection_write_timeout(&mut self, proxy_connection_write_timeout: u64) {
+        self.proxy_connection_write_timeout = proxy_connection_write_timeout;
+    }
+    pub fn user_token(&self) -> &str {
         &self.user_token
     }
-
-    pub fn get_proxy_addresses(&self) -> &Vec<String> {
-        &self.proxy_addresses
-    }
-
-    pub fn get_ipv6(&self) -> bool {
+    pub fn ipv6(&self) -> bool {
         self.ipv6
     }
-
-    pub fn get_port(&self) -> u16 {
+    pub fn port(&self) -> u16 {
         self.port
     }
-
-    pub fn get_rsa_dir(&self) -> &Path {
+    pub fn rsa_dir(&self) -> &PathBuf {
         &self.rsa_dir
     }
-
-    pub fn get_worker_thread_number(&self) -> usize {
+    pub fn worker_thread_number(&self) -> usize {
         self.worker_thread_number
     }
-
-    pub fn get_compress(&self) -> bool {
+    pub fn compress(&self) -> bool {
         self.compress
     }
-
-    pub fn get_proxy_send_buffer_size(&self) -> usize {
-        self.proxy_send_buffer_size
+    pub fn proxy_addresses(&self) -> &Vec<String> {
+        &self.proxy_addresses
     }
-
-    pub fn get_connect_to_proxy_timeout(&self) -> u64 {
-        self.connect_to_proxy_timeout
-    }
-    pub fn get_client_receive_buffer_size(&self) -> usize {
+    pub fn client_receive_buffer_size(&self) -> usize {
         self.client_receive_buffer_size
     }
-
-    pub fn get_max_log_level(&self) -> LevelFilter {
-        LevelFilter::from_str(&self.max_log_level).unwrap_or(LevelFilter::ERROR)
+    pub fn proxy_send_buffer_size(&self) -> usize {
+        self.proxy_send_buffer_size
+    }
+    pub fn connect_to_proxy_timeout(&self) -> u64 {
+        self.connect_to_proxy_timeout
+    }
+    pub fn max_log_level(&self) -> &str {
+        &self.max_log_level
+    }
+    pub fn proxy_connection_read_timeout(&self) -> u64 {
+        self.proxy_connection_read_timeout
+    }
+    pub fn proxy_connection_write_timeout(&self) -> u64 {
+        self.proxy_connection_write_timeout
     }
 }

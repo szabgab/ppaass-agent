@@ -1,4 +1,6 @@
 use std::net::SocketAddr;
+use std::str::FromStr;
+use std::sync::Arc;
 
 use crate::{config::AgentConfig, error::AgentError};
 use crate::{
@@ -7,19 +9,44 @@ use crate::{
     transport::dispatcher::{ClientTransport, ClientTransportDispatcher},
 };
 
+use crate::trace::init_global_tracing_subscriber;
 use tokio::net::{TcpListener, TcpStream};
+use tokio::runtime::{Builder, Runtime};
+use tracing::level_filters::LevelFilter;
 use tracing::{debug, error, info};
+use tracing_appender::non_blocking::WorkerGuard;
 
-pub struct AgentServer<'config>
-where
-    'config: 'static,
-{
-    config: &'config AgentConfig,
+const AGENT_SERVER_RUNTIME_NAME: &str = "AGENT-SERVER";
+
+pub struct AgentServer {
+    config: Arc<AgentConfig>,
+    runtime: Runtime,
+    client_transport_dispatcher: Arc<ClientTransportDispatcher<AgentServerRsaCryptoFetcher>>,
+    _tracing_guard: WorkerGuard,
 }
 
-impl<'config> AgentServer<'config> {
-    pub fn new(config: &'config AgentConfig) -> Self {
-        Self { config }
+impl AgentServer {
+    pub fn new(config: AgentConfig) -> Result<Self, AgentError> {
+        let config = Arc::new(config);
+        let _tracing_guard = init_global_tracing_subscriber(
+            LevelFilter::from_str(config.max_log_level()).unwrap_or(LevelFilter::ERROR),
+        )?;
+        let rsa_crypto_fetcher = AgentServerRsaCryptoFetcher::new(&config)?;
+        let proxy_connection_factory =
+            ProxyConnectionFactory::new(config.clone(), rsa_crypto_fetcher)?;
+        let client_transport_dispatcher =
+            ClientTransportDispatcher::new(config.clone(), proxy_connection_factory);
+        let runtime = Builder::new_multi_thread()
+            .enable_all()
+            .thread_name(AGENT_SERVER_RUNTIME_NAME)
+            .worker_threads(config.worker_thread_number())
+            .build()?;
+        Ok(Self {
+            config,
+            runtime,
+            client_transport_dispatcher: Arc::new(client_transport_dispatcher),
+            _tracing_guard,
+        })
     }
     async fn accept_client_connection(
         tcp_listener: &TcpListener,
@@ -29,37 +56,17 @@ impl<'config> AgentServer<'config> {
         Ok((client_tcp_stream, client_socket_address))
     }
 
-    pub async fn start(&mut self) -> Result<(), AgentError> {
-        let agent_server_bind_addr = if self.config.get_ipv6() {
-            format!("::1:{}", self.config.get_port())
+    async fn run(
+        config: Arc<AgentConfig>,
+        client_transport_dispatcher: Arc<ClientTransportDispatcher<AgentServerRsaCryptoFetcher>>,
+    ) -> Result<(), AgentError> {
+        let agent_server_bind_addr = if config.ipv6() {
+            format!("::1:{}", config.port())
         } else {
-            format!("0.0.0.0:{}", self.config.get_port())
+            format!("0.0.0.0:{}", config.port())
         };
         info!("Agent server start to serve request on address: {agent_server_bind_addr}.");
         let tcp_listener = TcpListener::bind(&agent_server_bind_addr).await?;
-        let rsa_crypto_fetcher = {
-            let rsa_crypto_fetcher = Box::new(AgentServerRsaCryptoFetcher::new(self.config)?);
-            Box::leak(rsa_crypto_fetcher)
-        };
-        let rsa_crypto_fetcher = &*rsa_crypto_fetcher;
-
-        let proxy_connection_factory = {
-            let proxy_connection_factory = Box::new(ProxyConnectionFactory::new(
-                self.config,
-                rsa_crypto_fetcher,
-            )?);
-            Box::leak(proxy_connection_factory)
-        };
-        let proxy_connection_factory = &*proxy_connection_factory;
-        let client_transport_dispatcher = {
-            let client_transport_dispatcher = Box::new(ClientTransportDispatcher::new(
-                self.config,
-                proxy_connection_factory,
-            ));
-            Box::leak(client_transport_dispatcher)
-        };
-        let client_transport_dispatcher = &*client_transport_dispatcher;
-
         loop {
             let (client_tcp_stream, client_socket_address) =
                 match Self::accept_client_connection(&tcp_listener).await {
@@ -79,20 +86,23 @@ impl<'config> AgentServer<'config> {
             Self::handle_client_connection(
                 client_tcp_stream,
                 client_socket_address,
-                client_transport_dispatcher,
+                client_transport_dispatcher.clone(),
             );
         }
+    }
+
+    pub fn start(self) {
+        self.runtime.block_on(async move {
+            if let Err(e) = Self::run(self.config, self.client_transport_dispatcher).await {
+                error!("Fail to start agent server because of error: {e:?}");
+            }
+        });
     }
 
     fn handle_client_connection(
         client_tcp_stream: TcpStream,
         client_socket_address: SocketAddr,
-        client_transport_dispatcher: &'static ClientTransportDispatcher<
-            '_,
-            '_,
-            '_,
-            AgentServerRsaCryptoFetcher,
-        >,
+        client_transport_dispatcher: Arc<ClientTransportDispatcher<AgentServerRsaCryptoFetcher>>,
     ) {
         tokio::spawn(async move {
             let client_transport = client_transport_dispatcher
