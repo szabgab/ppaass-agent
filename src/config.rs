@@ -88,7 +88,7 @@ impl AgentConfig {
         self.client_receive_buffer_size
     }
 
-    pub(crate) fn get_max_log_level(&self) -> LevelFilter {
+    pub fn get_max_log_level(&self) -> LevelFilter {
         LevelFilter::from_str(&self.max_log_level).unwrap_or(LevelFilter::ERROR)
     }
 }

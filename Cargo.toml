@@ -8,6 +8,10 @@ description = "The agent part of the ppaass application"
 
 [[bin]]
 name = "ppaass-agent"
+path = "src/bin/start.rs"
+
+[lib]
+path = "src/lib.rs"
 
 [build]
 rustflags = ["-C", "target-cpu=native"]

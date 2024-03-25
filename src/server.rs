@@ -18,7 +18,7 @@ where
 }
 
 impl<'config> AgentServer<'config> {
-    pub(crate) fn new(config: &'config AgentConfig) -> Self {
+    pub fn new(config: &'config AgentConfig) -> Self {
         Self { config }
     }
     async fn accept_client_connection(

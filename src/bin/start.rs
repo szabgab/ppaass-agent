@@ -1,19 +1,8 @@
-mod codec;
-mod config;
-mod crypto;
-mod error;
-mod proxy;
-mod server;
-mod trace;
-mod transport;
-
-pub const SOCKS_V5: u8 = 5;
-pub const SOCKS_V4: u8 = 4;
-
 use clap::Parser;
-use config::AgentConfig;
-use error::AgentError;
-use server::AgentServer;
+use ppaass_agent::config::AgentConfig;
+use ppaass_agent::error::AgentError;
+use ppaass_agent::server::AgentServer;
+use ppaass_agent::trace::init_global_tracing_subscriber;
 use tokio::runtime::Builder;
 use tracing::error;
 
@@ -25,10 +14,8 @@ static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
 
 fn main() -> Result<(), AgentError> {
     let agent_config = Box::new(AgentConfig::parse());
-    let (subscriber, _tracing_guard) = trace::init_global_tracing_subscriber(
-        LOG_FILE_NAME_PREFIX,
-        agent_config.get_max_log_level(),
-    )?;
+    let (subscriber, _tracing_guard) =
+        init_global_tracing_subscriber(LOG_FILE_NAME_PREFIX, agent_config.get_max_log_level())?;
     tracing::subscriber::set_global_default(subscriber).map_err(|e| {
         AgentError::Other(format!(
             "Fail to initialize tracing system because of error: {e:?}"
