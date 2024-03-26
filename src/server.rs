@@ -70,6 +70,20 @@ impl AgentServerGuard {
     }
 }
 
+impl Drop for AgentServerGuard {
+    fn drop(&mut self) {
+        let signal_sender = self.signal_sender.clone();
+        tokio::spawn(async move {
+            if let Err(e) = signal_sender
+                .send(AgentServerSignal::Finalize(AgentServerFinalizeSignal::Stop))
+                .await
+            {
+                error!("Fail to send stop signal to agent server on guard drop: {e:?}")
+            };
+        });
+    }
+}
+
 pub struct AgentServer {
     config: Arc<AgentConfig>,
     runtime: Runtime,

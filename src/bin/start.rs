@@ -8,6 +8,6 @@ static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
 
 fn main() -> Result<(), AgentError> {
     let agent_server = AgentServer::new(AgentConfig::parse())?;
-    agent_server.start();
+    let _guard = agent_server.start();
     Ok(())
 }
