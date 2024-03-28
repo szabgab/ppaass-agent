@@ -4,8 +4,8 @@ pub mod server;
 mod codec;
 pub mod config;
 mod crypto;
+pub mod log;
 mod proxy;
-mod trace;
 mod transport;
 
 pub const SOCKS_V5: u8 = 5;

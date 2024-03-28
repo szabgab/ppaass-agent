@@ -1,26 +1,17 @@
 use std::net::SocketAddr;
-use std::str::FromStr;
 use std::sync::Arc;
-
 use std::time::Duration;
-
 use crate::{config::AgentConfig, error::AgentError};
 use crate::{
     crypto::AgentServerRsaCryptoFetcher,
     proxy::ProxyConnectionFactory,
     transport::dispatcher::{ClientTransport, ClientTransportDispatcher},
 };
-
-use crate::trace::init_global_tracing_subscriber;
 use tokio::net::{TcpListener, TcpStream};
 use tokio::runtime::{Builder, Runtime};
-
 use tokio::task::JoinHandle;
 use tokio::time::sleep;
-
-use tracing::level_filters::LevelFilter;
 use tracing::{debug, error, info};
-use tracing_appender::non_blocking::WorkerGuard;
 
 const AGENT_SERVER_RUNTIME_NAME: &str = "AGENT-SERVER";
 
@@ -43,15 +34,11 @@ pub struct AgentServer {
     config: Arc<AgentConfig>,
     runtime: Runtime,
     client_transport_dispatcher: Arc<ClientTransportDispatcher<AgentServerRsaCryptoFetcher>>,
-    _tracing_guard: WorkerGuard,
 }
 
 impl AgentServer {
     pub fn new(config: AgentConfig) -> Result<Self, AgentError> {
         let config = Arc::new(config);
-        let _tracing_guard = init_global_tracing_subscriber(
-            LevelFilter::from_str(config.max_log_level()).unwrap_or(LevelFilter::ERROR),
-        )?;
         let rsa_crypto_fetcher = AgentServerRsaCryptoFetcher::new(&config)?;
         let proxy_connection_factory =
             ProxyConnectionFactory::new(config.clone(), rsa_crypto_fetcher)?;
@@ -66,7 +53,6 @@ impl AgentServer {
             config,
             runtime,
             client_transport_dispatcher: Arc::new(client_transport_dispatcher),
-            _tracing_guard,
         })
     }
     async fn accept_client_connection(
