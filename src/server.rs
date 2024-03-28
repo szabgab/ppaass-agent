@@ -2,6 +2,8 @@ use std::net::SocketAddr;
 use std::str::FromStr;
 use std::sync::Arc;
 
+use std::time::Duration;
+
 use crate::{config::AgentConfig, error::AgentError};
 use crate::{
     crypto::AgentServerRsaCryptoFetcher,
@@ -13,6 +15,8 @@ use crate::trace::init_global_tracing_subscriber;
 use tokio::net::{TcpListener, TcpStream};
 use tokio::runtime::{Builder, Runtime};
 use tokio::sync::mpsc::{channel, Receiver, Sender};
+use tokio::task::JoinHandle;
+use tokio::time::sleep;
 
 use tracing::level_filters::LevelFilter;
 use tracing::{debug, error, info};
@@ -37,43 +41,48 @@ pub enum AgentServerCommonSignal {
 }
 
 pub struct AgentServerGuard {
+    join_handle: JoinHandle<()>,
+    runtime: Runtime,
     signal_sender: Sender<AgentServerSignal>,
 }
 
 impl AgentServerGuard {
-    pub async fn send_finalize_signal(
-        self,
-        finalize_signal: AgentServerFinalizeSignal,
-    ) -> Result<(), AgentError> {
-        self.signal_sender
-            .send(AgentServerSignal::Finalize(finalize_signal))
-            .await
-            .map_err(|e| {
-                AgentError::Other(format!(
-                    "Fail to send finalize signal to agent server because of error: {e:?}"
-                ))
-            })
+    pub fn blocking(&self) {
+        self.runtime.block_on(async {
+            while !self.join_handle.is_finished() {
+                sleep(Duration::from_millis(100)).await;
+            }
+        });
     }
 
-    pub async fn send_common_signal(
-        &self,
-        common_signal: AgentServerCommonSignal,
-    ) -> Result<(), AgentError> {
-        self.signal_sender
-            .send(AgentServerSignal::Common(common_signal))
-            .await
-            .map_err(|e| {
-                AgentError::Other(format!(
-                    "Fail to send common signal to agent server because of error: {e:?}"
-                ))
-            })
+    pub fn send_finalize_signal(self, finalize_signal: AgentServerFinalizeSignal) {
+        self.runtime.block_on(async {
+            if let Err(e) = self
+                .signal_sender
+                .send(AgentServerSignal::Finalize(finalize_signal))
+                .await
+            {
+                error!("Fail to send finalize signal to agent server because of error: {e:?}");
+            }
+        });
+    }
+
+    pub fn send_common_signal(&self, common_signal: AgentServerCommonSignal) {
+        let signal_sender = self.signal_sender.clone();
+        self.runtime.block_on(async {
+            if let Err(e)=  signal_sender
+                .send(AgentServerSignal::Common(common_signal))
+                .await {
+                error!("Fail to send common signal to agent server because of error: {e:?}"); 
+            }
+        });
     }
 }
 
 impl Drop for AgentServerGuard {
     fn drop(&mut self) {
         let signal_sender = self.signal_sender.clone();
-        tokio::spawn(async move {
+        self.runtime.block_on(async move {
             if let Err(e) = signal_sender
                 .send(AgentServerSignal::Finalize(AgentServerFinalizeSignal::Stop))
                 .await
@@ -173,7 +182,7 @@ impl AgentServer {
 
     pub fn start(self) -> AgentServerGuard {
         let (signal_sender, signal_receiver) = channel::<AgentServerSignal>(1024);
-        self.runtime.block_on(async move {
+        let join_handle = self.runtime.spawn(async move {
             if let Err(e) = Self::run(
                 self.config,
                 self.client_transport_dispatcher,
@@ -184,7 +193,11 @@ impl AgentServer {
                 error!("Fail to start agent server because of error: {e:?}");
             }
         });
-        AgentServerGuard { signal_sender }
+        AgentServerGuard {
+            join_handle,
+            signal_sender,
+            runtime: self.runtime,
+        }
     }
 
     fn handle_client_connection(
