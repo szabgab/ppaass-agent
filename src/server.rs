@@ -14,7 +14,7 @@ use crate::{
 use crate::trace::init_global_tracing_subscriber;
 use tokio::net::{TcpListener, TcpStream};
 use tokio::runtime::{Builder, Runtime};
-use tokio::sync::mpsc::{channel, Receiver, Sender};
+
 use tokio::task::JoinHandle;
 use tokio::time::sleep;
 
@@ -24,26 +24,9 @@ use tracing_appender::non_blocking::WorkerGuard;
 
 const AGENT_SERVER_RUNTIME_NAME: &str = "AGENT-SERVER";
 
-#[derive(Debug)]
-pub enum AgentServerSignal {
-    Finalize(AgentServerFinalizeSignal),
-    Common(AgentServerCommonSignal),
-}
-
-#[derive(Debug)]
-pub enum AgentServerFinalizeSignal {
-    Stop,
-}
-
-#[derive(Debug)]
-pub enum AgentServerCommonSignal {
-    Other,
-}
-
 pub struct AgentServerGuard {
     join_handle: JoinHandle<()>,
     runtime: Runtime,
-    signal_sender: Sender<AgentServerSignal>,
 }
 
 impl AgentServerGuard {
@@ -53,34 +36,6 @@ impl AgentServerGuard {
                 sleep(Duration::from_millis(100)).await;
             }
         });
-    }
-
-    pub async fn send_finalize_signal(
-        self,
-        finalize_signal: AgentServerFinalizeSignal,
-    ) -> Result<(), AgentError> {
-        self.signal_sender
-            .send(AgentServerSignal::Finalize(finalize_signal))
-            .await
-            .map_err(|e| {
-                AgentError::Other(format!(
-                    "Fail to send finalize signal to agent server because of error: {e:?}"
-                ))
-            })
-    }
-
-    pub async fn send_common_signal(
-        &self,
-        common_signal: AgentServerCommonSignal,
-    ) -> Result<(), AgentError> {
-        self.signal_sender
-            .send(AgentServerSignal::Common(common_signal))
-            .await
-            .map_err(|e| {
-                AgentError::Other(format!(
-                    "Fail to send common signal to agent server because of error: {e:?}"
-                ))
-            })
     }
 }
 
@@ -125,7 +80,6 @@ impl AgentServer {
     async fn run(
         config: Arc<AgentConfig>,
         client_transport_dispatcher: Arc<ClientTransportDispatcher<AgentServerRsaCryptoFetcher>>,
-        mut signal_receiver: Receiver<AgentServerSignal>,
     ) -> Result<(), AgentError> {
         let agent_server_bind_addr = if config.ipv6() {
             format!("::1:{}", config.port())
@@ -135,58 +89,31 @@ impl AgentServer {
         info!("Agent server start to serve request on address: {agent_server_bind_addr}.");
         let tcp_listener = TcpListener::bind(&agent_server_bind_addr).await?;
         loop {
-            tokio::select! {
-                // Receive the server signal
-                signal_result = signal_receiver.recv() => {
-                    match signal_result {
-                        None => return Ok(()),
-                        Some(single) => {
-                            match single {
-                                AgentServerSignal::Finalize(AgentServerFinalizeSignal::Stop) => {
-                                    // Server stop and quite the loop
-                                    return Ok(())
-                                }
-                                AgentServerSignal::Common(AgentServerCommonSignal::Other) => {
-                                    debug!("Receive common signal continue the loop");
-                                    continue;
-                                }
-                            }
-                        }
-                    }
+            match Self::accept_client_connection(&tcp_listener).await {
+                Ok((client_tcp_stream, client_socket_address)) => {
+                    debug!("Accept client tcp connection on address: {client_socket_address}");
+                    Self::handle_client_connection(
+                        client_tcp_stream,
+                        client_socket_address,
+                        client_transport_dispatcher.clone(),
+                    );
                 }
-                // Accept client connection, and handle client connection
-                accept_result = Self::accept_client_connection(&tcp_listener) => {
-                    match accept_result{
-                        Ok((client_tcp_stream, client_socket_address)) => {
-                            debug!("Accept client tcp connection on address: {client_socket_address}");
-                            Self::handle_client_connection(client_tcp_stream, client_socket_address, client_transport_dispatcher.clone());
-                        }
-                        Err(e) => {
-                            error!("Agent server fail to accept client connection because of error: {e:?}");
-                            continue;
-                        }
-                    }
+                Err(e) => {
+                    error!("Agent server fail to accept client connection because of error: {e:?}");
+                    continue;
                 }
             }
         }
     }
 
     pub fn start(self) -> AgentServerGuard {
-        let (signal_sender, signal_receiver) = channel::<AgentServerSignal>(1024);
         let join_handle = self.runtime.spawn(async move {
-            if let Err(e) = Self::run(
-                self.config,
-                self.client_transport_dispatcher,
-                signal_receiver,
-            )
-            .await
-            {
+            if let Err(e) = Self::run(self.config, self.client_transport_dispatcher).await {
                 error!("Fail to start agent server because of error: {e:?}");
             }
         });
         AgentServerGuard {
             join_handle,
-            signal_sender,
             runtime: self.runtime,
         }
     }
