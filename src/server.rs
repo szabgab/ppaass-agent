@@ -55,41 +55,32 @@ impl AgentServerGuard {
         });
     }
 
-    pub fn send_finalize_signal(self, finalize_signal: AgentServerFinalizeSignal) {
-        self.runtime.block_on(async {
-            if let Err(e) = self
-                .signal_sender
-                .send(AgentServerSignal::Finalize(finalize_signal))
-                .await
-            {
-                error!("Fail to send finalize signal to agent server because of error: {e:?}");
-            }
-        });
+    pub async fn send_finalize_signal(
+        self,
+        finalize_signal: AgentServerFinalizeSignal,
+    ) -> Result<(), AgentError> {
+        self.signal_sender
+            .send(AgentServerSignal::Finalize(finalize_signal))
+            .await
+            .map_err(|e| {
+                AgentError::Other(format!(
+                    "Fail to send finalize signal to agent server because of error: {e:?}"
+                ))
+            })
     }
 
-    pub fn send_common_signal(&self, common_signal: AgentServerCommonSignal) {
-        let signal_sender = self.signal_sender.clone();
-        self.runtime.block_on(async {
-            if let Err(e)=  signal_sender
-                .send(AgentServerSignal::Common(common_signal))
-                .await {
-                error!("Fail to send common signal to agent server because of error: {e:?}"); 
-            }
-        });
-    }
-}
-
-impl Drop for AgentServerGuard {
-    fn drop(&mut self) {
-        let signal_sender = self.signal_sender.clone();
-        self.runtime.block_on(async move {
-            if let Err(e) = signal_sender
-                .send(AgentServerSignal::Finalize(AgentServerFinalizeSignal::Stop))
-                .await
-            {
-                error!("Fail to send stop signal to agent server on guard drop: {e:?}")
-            };
-        });
+    pub async fn send_common_signal(
+        &self,
+        common_signal: AgentServerCommonSignal,
+    ) -> Result<(), AgentError> {
+        self.signal_sender
+            .send(AgentServerSignal::Common(common_signal))
+            .await
+            .map_err(|e| {
+                AgentError::Other(format!(
+                    "Fail to send common signal to agent server because of error: {e:?}"
+                ))
+            })
     }
 }
 
