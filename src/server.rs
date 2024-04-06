@@ -42,12 +42,11 @@ pub enum AgentServerSignal {
 pub struct AgentServerGuard {
     _join_handle: JoinHandle<()>,
     runtime: Runtime,
-    signal_rx: Receiver<AgentServerSignal>,
 }
 
 impl AgentServerGuard {
-    pub fn blocking(self) {
-        let mut signal_rx = self.signal_rx;
+    pub fn blocking(self, signal_rx: Receiver<AgentServerSignal>) {
+        let mut signal_rx = signal_rx;
         self.runtime.block_on(async {
             while let Some(signal) = signal_rx.recv().await {
                 println!("Agent server signal: {signal:?}");
@@ -128,11 +127,11 @@ impl AgentServer {
             match Self::accept_client_connection(&tcp_listener).await {
                 Ok((client_tcp_stream, client_socket_address)) => {
                     signal_tx
-                        .send(AgentServerSignal::ClientConnectionAcceptSuccess{
+                        .send(AgentServerSignal::ClientConnectionAcceptSuccess {
                             client_socket_address,
-                            message:format!(
+                            message: format!(
                                 "Success to accept client connection: {client_socket_address}"
-                            )
+                            ),
                         })
                         .await
                         .map_err(|e| {
@@ -166,7 +165,7 @@ impl AgentServer {
         }
     }
 
-    pub fn start(self) -> AgentServerGuard {
+    pub fn start(self) -> (AgentServerGuard, Receiver<AgentServerSignal>) {
         let (server_signal_tx, server_signal_rx) = channel(1024);
         let join_handle = self.runtime.spawn(async move {
             if let Err(e) = Self::run(
@@ -179,11 +178,13 @@ impl AgentServer {
                 error!("Fail to start agent server because of error: {e:?}");
             }
         });
-        AgentServerGuard {
-            _join_handle: join_handle,
-            runtime: self.runtime,
-            signal_rx: server_signal_rx,
-        }
+        (
+            AgentServerGuard {
+                _join_handle: join_handle,
+                runtime: self.runtime,
+            },
+            server_signal_rx,
+        )
     }
 
     fn handle_client_connection(
@@ -201,11 +202,11 @@ impl AgentServer {
                 Err(e) => {
                     error!("Fail to dispatch client connection [{client_socket_address}] to transport because of error: {e:?}");
                     if let Err(e) = signal_tx
-                        .send(AgentServerSignal::ClientConnectionBeforeRelayFail{
+                        .send(AgentServerSignal::ClientConnectionBeforeRelayFail {
                             client_socket_address,
-                            message:format!(
+                            message: format!(
                                 "Fail to process client connection: {client_socket_address}"
-                            )
+                            ),
                         })
                         .await
                     {

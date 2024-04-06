@@ -11,7 +11,7 @@ fn main() -> Result<(), AgentError> {
     let config = AgentConfig::parse();
     let _log_guard = log::init_log(&config)?;
     let agent_server = AgentServer::new(config)?;
-    let guard = agent_server.start();
-    guard.blocking();
+    let (guard, signal_rx) = agent_server.start();
+    guard.blocking(signal_rx);
     Ok(())
 }
