@@ -1,30 +1,56 @@
-use std::net::SocketAddr;
-use std::sync::Arc;
-use std::time::Duration;
 use crate::{config::AgentConfig, error::AgentError};
 use crate::{
     crypto::AgentServerRsaCryptoFetcher,
     proxy::ProxyConnectionFactory,
     transport::dispatcher::{ClientTransport, ClientTransportDispatcher},
 };
+use std::net::SocketAddr;
+use std::sync::Arc;
+
 use tokio::net::{TcpListener, TcpStream};
 use tokio::runtime::{Builder, Runtime};
+use tokio::sync::mpsc::{channel, Receiver, Sender};
 use tokio::task::JoinHandle;
-use tokio::time::sleep;
+
 use tracing::{debug, error, info};
 
 const AGENT_SERVER_RUNTIME_NAME: &str = "AGENT-SERVER";
 
+#[derive(Debug)]
+pub enum AgentServerSignal {
+    FailToListen(String),
+    SuccessToListen(String),
+    ClientConnectionAcceptSuccess {
+        client_socket_address: SocketAddr,
+        message: String,
+    },
+    ClientConnectionAcceptFail(String),
+    ClientConnectionBeforeRelayFail {
+        client_socket_address: SocketAddr,
+        message: String,
+    },
+    ClientConnectionReadProxyConnectionWriteClose {
+        client_socket_address: SocketAddr,
+        message: String,
+    },
+    ClientConnectionWriteProxyConnectionReadClose {
+        client_socket_address: SocketAddr,
+        message: String,
+    },
+}
+
 pub struct AgentServerGuard {
-    join_handle: JoinHandle<()>,
+    _join_handle: JoinHandle<()>,
     runtime: Runtime,
+    signal_rx: Receiver<AgentServerSignal>,
 }
 
 impl AgentServerGuard {
-    pub fn blocking(&self) {
+    pub fn blocking(self) {
+        let mut signal_rx = self.signal_rx;
         self.runtime.block_on(async {
-            while !self.join_handle.is_finished() {
-                sleep(Duration::from_millis(100)).await;
+            while let Some(signal) = signal_rx.recv().await {
+                println!("Agent server signal: {signal:?}");
             }
         });
     }
@@ -66,6 +92,7 @@ impl AgentServer {
     async fn run(
         config: Arc<AgentConfig>,
         client_transport_dispatcher: Arc<ClientTransportDispatcher<AgentServerRsaCryptoFetcher>>,
+        signal_tx: Sender<AgentServerSignal>,
     ) -> Result<(), AgentError> {
         let agent_server_bind_addr = if config.ipv6() {
             format!("::1:{}", config.port())
@@ -73,19 +100,66 @@ impl AgentServer {
             format!("0.0.0.0:{}", config.port())
         };
         info!("Agent server start to serve request on address: {agent_server_bind_addr}.");
-        let tcp_listener = TcpListener::bind(&agent_server_bind_addr).await?;
+        let tcp_listener = match TcpListener::bind(&agent_server_bind_addr).await {
+            Ok(tcp_listener) => tcp_listener,
+            Err(e) => {
+                signal_tx
+                    .send(AgentServerSignal::FailToListen(format!(
+                        "Fail to listen tcp port: {}",
+                        config.port()
+                    )))
+                    .await
+                    .map_err(|e| {
+                        AgentError::Other(format!("Fail to send signal because of error: {e:?}"))
+                    })?;
+                return Err(AgentError::StdIo(e));
+            }
+        };
+        signal_tx
+            .send(AgentServerSignal::SuccessToListen(format!(
+                "Fail to listen tcp port: {}",
+                config.port()
+            )))
+            .await
+            .map_err(|e| {
+                AgentError::Other(format!("Fail to send signal because of error: {e:?}"))
+            })?;
         loop {
             match Self::accept_client_connection(&tcp_listener).await {
                 Ok((client_tcp_stream, client_socket_address)) => {
+                    signal_tx
+                        .send(AgentServerSignal::ClientConnectionAcceptSuccess{
+                            client_socket_address,
+                            message:format!(
+                                "Success to accept client connection: {client_socket_address}"
+                            )
+                        })
+                        .await
+                        .map_err(|e| {
+                            AgentError::Other(format!(
+                                "Fail to send signal because of error: {e:?}"
+                            ))
+                        })?;
                     debug!("Accept client tcp connection on address: {client_socket_address}");
                     Self::handle_client_connection(
                         client_tcp_stream,
                         client_socket_address,
                         client_transport_dispatcher.clone(),
+                        signal_tx.clone(),
                     );
                 }
                 Err(e) => {
                     error!("Agent server fail to accept client connection because of error: {e:?}");
+                    signal_tx
+                        .send(AgentServerSignal::ClientConnectionAcceptFail(format!(
+                            "Fail to accept client connection because of error: {e}"
+                        )))
+                        .await
+                        .map_err(|e| {
+                            AgentError::Other(format!(
+                                "Fail to send signal because of error: {e:?}"
+                            ))
+                        })?;
                     continue;
                 }
             }
@@ -93,14 +167,22 @@ impl AgentServer {
     }
 
     pub fn start(self) -> AgentServerGuard {
+        let (server_signal_tx, server_signal_rx) = channel(1024);
         let join_handle = self.runtime.spawn(async move {
-            if let Err(e) = Self::run(self.config, self.client_transport_dispatcher).await {
+            if let Err(e) = Self::run(
+                self.config,
+                self.client_transport_dispatcher,
+                server_signal_tx,
+            )
+            .await
+            {
                 error!("Fail to start agent server because of error: {e:?}");
             }
         });
         AgentServerGuard {
-            join_handle,
+            _join_handle: join_handle,
             runtime: self.runtime,
+            signal_rx: server_signal_rx,
         }
     }
 
@@ -108,21 +190,64 @@ impl AgentServer {
         client_tcp_stream: TcpStream,
         client_socket_address: SocketAddr,
         client_transport_dispatcher: Arc<ClientTransportDispatcher<AgentServerRsaCryptoFetcher>>,
+        signal_tx: Sender<AgentServerSignal>,
     ) {
         tokio::spawn(async move {
-            let client_transport = client_transport_dispatcher
+            let client_transport = match client_transport_dispatcher
                 .dispatch(client_tcp_stream, client_socket_address)
-                .await?;
-            match client_transport {
-                ClientTransport::Socks5(socks5_transport) => {
-                    socks5_transport.process().await?;
-                }
-                ClientTransport::Http(http_transport) => {
-                    http_transport.process().await?;
+                .await
+            {
+                Ok(client_transport) => client_transport,
+                Err(e) => {
+                    error!("Fail to dispatch client connection [{client_socket_address}] to transport because of error: {e:?}");
+                    if let Err(e) = signal_tx
+                        .send(AgentServerSignal::ClientConnectionBeforeRelayFail{
+                            client_socket_address,
+                            message:format!(
+                                "Fail to process client connection: {client_socket_address}"
+                            )
+                        })
+                        .await
+                    {
+                        error!("Fail to send signal because of error: {e:?}");
+                    }
+                    return;
                 }
             };
-            debug!("Client transport [{client_socket_address}] complete to serve.");
-            Ok::<(), AgentError>(())
+            match client_transport {
+                ClientTransport::Socks5(socks5_transport) => {
+                    if let Err(e) = socks5_transport.process(signal_tx.clone()).await {
+                        error!("Fail to process socks5 client connection [{client_socket_address}] in transport because of error: {e:?}");
+                        if let Err(e) = signal_tx
+                            .send(AgentServerSignal::ClientConnectionBeforeRelayFail{
+                                client_socket_address,
+                                message:format!(
+                                    "Fail to process socks5 client connection: {client_socket_address}"
+                                )
+                            })
+                            .await
+                        {
+                            error!("Fail to send signal because of error: {e:?}");
+                        }
+                    };
+                }
+                ClientTransport::Http(http_transport) => {
+                    if let Err(e) = http_transport.process(signal_tx.clone()).await {
+                        error!("Fail to process http client connection [{client_socket_address}] in transport because of error: {e:?}");
+                        if let Err(e) = signal_tx
+                            .send(AgentServerSignal::ClientConnectionBeforeRelayFail{
+                                client_socket_address,
+                                message:format!(
+                                    "Fail to process http client connection: {client_socket_address}"
+                                )
+                            })
+                            .await
+                        {
+                            error!("Fail to send signal because of error: {e:?}");
+                        }
+                    };
+                }
+            };
         });
     }
 }

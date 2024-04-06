@@ -15,6 +15,7 @@ use ppaass_protocol::message::values::address::PpaassUnifiedAddress;
 use ppaass_protocol::message::values::encryption::PpaassMessagePayloadEncryptionSelector;
 use ppaass_protocol::message::{PpaassProxyMessage, PpaassProxyMessagePayload};
 use tokio::net::TcpStream;
+use tokio::sync::mpsc::Sender;
 
 use tokio_util::codec::{Framed, FramedParts};
 use tracing::{debug, error};
@@ -29,6 +30,7 @@ use crate::{
     error::AgentError,
     transport::{http::codec::HttpCodec, ClientTransportTcpDataRelay},
 };
+use crate::server::AgentServerSignal;
 
 use super::tcp_relay;
 
@@ -74,8 +76,9 @@ where
         }
     }
 
-    pub(crate) async fn process(self) -> Result<(), AgentError> {
+    pub(crate) async fn process(self,  signal_tx: Sender<AgentServerSignal>,) -> Result<(), AgentError> {
         let initial_buf = self.initial_buf;
+        let client_socket_address=self.client_socket_addr;
         let src_address = self.src_address;
         let client_tcp_stream = self.client_tcp_stream;
         let client_socket_addr = self.client_socket_addr;
@@ -201,6 +204,7 @@ where
             ClientTransportTcpDataRelay {
                 transport_id,
                 client_tcp_stream,
+                client_socket_address,
                 src_address,
                 dst_address,
                 proxy_connection_write,
@@ -208,6 +212,7 @@ where
                 init_data,
                 payload_encryption,
             },
+            signal_tx
         )
         .await
     }

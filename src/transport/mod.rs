@@ -2,6 +2,7 @@ pub(crate) mod dispatcher;
 mod http;
 mod socks;
 
+use std::net::SocketAddr;
 use std::time::Duration;
 
 use crate::{config::AgentConfig, error::AgentError};
@@ -21,7 +22,9 @@ use ppaass_protocol::message::{PpaassAgentMessage, PpaassProxyMessage, PpaassPro
 
 use crate::codec::PpaassProxyEdgeCodec;
 
+use crate::server::AgentServerSignal;
 use tokio::net::TcpStream;
+use tokio::sync::mpsc::Sender;
 use tokio_io_timeout::TimeoutStream;
 use tokio_stream::StreamExt as TokioStreamExt;
 use tokio_util::codec::{BytesCodec, Framed};
@@ -32,6 +35,7 @@ where
 {
     transport_id: String,
     client_tcp_stream: TcpStream,
+    client_socket_address: SocketAddr,
     src_address: PpaassUnifiedAddress,
     dst_address: PpaassUnifiedAddress,
     proxy_connection_write:
@@ -44,6 +48,7 @@ where
 async fn tcp_relay<F>(
     config: &AgentConfig,
     tcp_relay_info: ClientTransportTcpDataRelay<F>,
+    signal_tx: Sender<AgentServerSignal>,
 ) -> Result<(), AgentError>
 where
     F: RsaCryptoFetcher + Send + Sync + 'static,
@@ -52,6 +57,7 @@ where
     let ClientTransportTcpDataRelay {
         transport_id,
         client_tcp_stream,
+        client_socket_address,
         src_address,
         dst_address,
         mut proxy_connection_write,
@@ -88,6 +94,7 @@ where
     {
         let transport_id = transport_id.clone();
         let dst_address = dst_address.clone();
+        let signal_tx = signal_tx.clone();
         tokio::spawn(async move {
             // Forward client data to proxy
             let client_io_read = TokioStreamExt::fuse(client_io_read);
@@ -111,6 +118,17 @@ where
                     "Transport [{transport_id}] fail to close proxy connection beccause of error: {e:?}"
                 );
             };
+            if let Err(e) = signal_tx
+                .send(AgentServerSignal::ClientConnectionReadProxyConnectionWriteClose{
+                    client_socket_address,
+                    message:format!(
+                        "Client connection read half closed and proxy connection write half closed: {client_socket_address}"
+                    )
+                })
+                .await
+            {
+                error!("Fail to send signal because of error: {e:?}");
+            }
         });
     }
 
@@ -138,6 +156,17 @@ where
                 "Transport [{transport_id}] fail to close client connection beccause of error: {e:?}"
             );
         };
+        if let Err(e) = signal_tx
+            .send(AgentServerSignal::ClientConnectionWriteProxyConnectionReadClose{
+                client_socket_address,
+                message:format!(
+                    "Client connection write half closed and proxy connection read half closed: {client_socket_address}"
+                )
+            })
+            .await
+        {
+            error!("Fail to send signal because of error: {e:?}");
+        }
     });
 
     Ok(())

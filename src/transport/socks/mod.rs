@@ -18,6 +18,7 @@ use ppaass_protocol::message::{PpaassProxyMessage, PpaassProxyMessagePayload};
 
 use tracing::{debug, error, info};
 
+use tokio::sync::mpsc::Sender;
 use tokio::{
     io::AsyncReadExt,
     net::{TcpStream, UdpSocket},
@@ -32,6 +33,7 @@ use crate::{
     proxy::ProxyConnectionFactory,
 };
 
+use crate::server::AgentServerSignal;
 use crate::{
     error::AgentError,
     transport::{
@@ -82,22 +84,24 @@ where
         }
     }
 
-    pub(crate) async fn process(self) -> Result<(), AgentError> {
+    pub(crate) async fn process(
+        self,
+        signal_tx: Sender<AgentServerSignal>,
+    ) -> Result<(), AgentError> {
         let initial_buf = self.initial_buf;
         let src_address = self.src_address;
         let client_tcp_stream = self.client_tcp_stream;
-        let client_socket_addr = self.client_socket_addr;
+        let client_socket_address = self.client_socket_addr;
 
         let mut client_auth_framed_parts =
             FramedParts::new(client_tcp_stream, Socks5AuthCommandContentCodec);
         client_auth_framed_parts.read_buf = initial_buf;
         let mut client_auth_framed = Framed::from_parts(client_auth_framed_parts);
-        let client_auth_command =
-            client_auth_framed
-                .next()
-                .await
-                .ok_or(AgentError::Other(format!(
-            "Nothing to read from socks5 client when reading auth command: {client_socket_addr}"
+        let client_auth_command = client_auth_framed
+            .next()
+            .await
+            .ok_or(AgentError::Other(format!(
+            "Nothing to read from socks5 client when reading auth command: {client_socket_address}"
         )))??;
 
         debug!(
@@ -107,18 +111,18 @@ where
         let client_auth_response =
             Socks5AuthCommandResult::new(Socks5AuthMethod::NoAuthenticationRequired);
         client_auth_framed.send(client_auth_response).await?;
+
         let FramedParts {
             io: client_tcp_stream,
             ..
         } = client_auth_framed.into_parts();
 
         let mut socks5_init_framed = Framed::new(client_tcp_stream, Socks5InitCommandContentCodec);
-        let socks5_init_command =
-            socks5_init_framed
-                .next()
-                .await
-                .ok_or(AgentError::Other(format!(
-            "Nothing to read from socks5 client when reading init command: {client_socket_addr}"
+        let socks5_init_command = socks5_init_framed
+            .next()
+            .await
+            .ok_or(AgentError::Other(format!(
+            "Nothing to read from socks5 client when reading init command: {client_socket_address}"
         )))??;
         debug!(
             "Client tcp connection [{src_address}] start socks5 init process, command type: {:?}, destination address: {:?}",
@@ -149,8 +153,9 @@ where
                     &self.proxy_connection_factory,
                     src_address,
                     socks5_init_command.dst_address.into(),
-                    client_socket_addr,
+                    client_socket_address,
                     socks5_init_framed,
+                    signal_tx,
                 )
                 .await
             }
@@ -300,8 +305,9 @@ where
         proxy_connection_factory: &ProxyConnectionFactory<F>,
         src_address: PpaassUnifiedAddress,
         dst_address: PpaassUnifiedAddress,
-        client_socket_addr: SocketAddr,
+        client_socket_address: SocketAddr,
         mut socks5_init_framed: Framed<TcpStream, Socks5InitCommandContentCodec>,
+        signal_tx: Sender<AgentServerSignal>,
     ) -> Result<(), AgentError> {
         match &dst_address {
             PpaassUnifiedAddress::Ip(socket_addr) => {
@@ -368,8 +374,8 @@ where
 
         let proxy_message = match proxy_connection_read.next().await {
             None => {
-                error!("Fail to receive tcp init response from proxy in socks5 agent because of connection exhausted: {client_socket_addr}");
-                return Err(AgentError::Other(format!("Fail to receive tcp init response from proxy in socks5 agent because of connection exhausted: {client_socket_addr}")));
+                error!("Fail to receive tcp init response from proxy in socks5 agent because of connection exhausted: {client_socket_address}");
+                return Err(AgentError::Other(format!("Fail to receive tcp init response from proxy in socks5 agent because of connection exhausted: {client_socket_address}")));
             }
             Some(Ok(proxy_message)) => proxy_message,
             Some(Err(e)) => {
@@ -386,7 +392,7 @@ where
             proxy_message_payload
         else {
             return Err(AgentError::Other(format!(
-                "Not a tcp init response for client: {client_socket_addr}"
+                "Not a tcp init response for client: {client_socket_address}"
             )));
         };
         let transport_id = match result {
@@ -417,6 +423,7 @@ where
             ClientTransportTcpDataRelay {
                 transport_id,
                 client_tcp_stream,
+                client_socket_address,
                 src_address,
                 dst_address,
                 proxy_connection_write,
@@ -424,6 +431,7 @@ where
                 init_data: None,
                 payload_encryption,
             },
+            signal_tx,
         )
         .await?;
         Ok(())
