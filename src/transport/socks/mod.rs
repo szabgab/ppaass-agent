@@ -97,10 +97,11 @@ where
             FramedParts::new(client_tcp_stream, Socks5AuthCommandContentCodec);
         client_auth_framed_parts.read_buf = initial_buf;
         let mut client_auth_framed = Framed::from_parts(client_auth_framed_parts);
-        let client_auth_command = client_auth_framed
-            .next()
-            .await
-            .ok_or(AgentError::Other(format!(
+        let client_auth_command =
+            client_auth_framed
+                .next()
+                .await
+                .ok_or(AgentError::Other(format!(
             "Nothing to read from socks5 client when reading auth command: {client_socket_address}"
         )))??;
 
@@ -118,10 +119,11 @@ where
         } = client_auth_framed.into_parts();
 
         let mut socks5_init_framed = Framed::new(client_tcp_stream, Socks5InitCommandContentCodec);
-        let socks5_init_command = socks5_init_framed
-            .next()
-            .await
-            .ok_or(AgentError::Other(format!(
+        let socks5_init_command =
+            socks5_init_framed
+                .next()
+                .await
+                .ok_or(AgentError::Other(format!(
             "Nothing to read from socks5 client when reading init command: {client_socket_address}"
         )))??;
         debug!(
@@ -399,6 +401,15 @@ where
             ProxyTcpInitResult::Success(transport_id) => transport_id,
             ProxyTcpInitResult::Fail(reason) => {
                 error!("Client socks5 tcp connection [{src_address}] fail to initialize tcp connection with proxy because of reason: {reason:?}");
+                if let Err(e) = signal_tx.send(AgentServerSignal::ClientConnectionTransportCreateFail{
+                    client_socket_address,
+                    dst_address: dst_address.clone(),
+                    message: format!(
+                        "Client connection [{client_socket_address}] connect to [{dst_address}] fail."
+                    ),
+                }).await{
+                    error!("Fail to send signal because of error: {e:?}");
+                }
                 return Err(AgentError::Other(format!(
                     "Client socks5 tcp connection [{src_address}] fail to initialize tcp connection with proxy because of reason: {reason:?}"
                 )));
@@ -418,6 +429,18 @@ where
         debug!(
             "Client tcp connection [{src_address}] success to do sock5 handshake begin to relay."
         );
+        if let Err(e) = signal_tx
+            .send(AgentServerSignal::ClientConnectionTransportCreateSuccess {
+                client_socket_address,
+                dst_address: dst_address.clone(),
+                message: format!(
+                        "Client connection [{client_socket_address}] connect to [{dst_address}] success."
+                    ),
+            })
+            .await
+        {
+            error!("Fail to send signal because of error: {e:?}");
+        }
         tcp_relay(
             config,
             ClientTransportTcpDataRelay {

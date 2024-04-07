@@ -7,6 +7,7 @@ use crate::{
 use std::net::SocketAddr;
 use std::sync::Arc;
 
+use ppaass_protocol::message::values::address::PpaassUnifiedAddress;
 use tokio::net::{TcpListener, TcpStream};
 use tokio::runtime::{Builder, Runtime};
 use tokio::sync::mpsc::{channel, Receiver, Sender};
@@ -27,6 +28,16 @@ pub enum AgentServerSignal {
     ClientConnectionAcceptFail(String),
     ClientConnectionBeforeRelayFail {
         client_socket_address: SocketAddr,
+        message: String,
+    },
+    ClientConnectionTransportCreateSuccess {
+        client_socket_address: SocketAddr,
+        dst_address: PpaassUnifiedAddress,
+        message: String,
+    },
+    ClientConnectionTransportCreateFail {
+        client_socket_address: SocketAddr,
+        dst_address: PpaassUnifiedAddress,
         message: String,
     },
     ClientConnectionReadProxyConnectionWriteClose {
