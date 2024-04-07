@@ -30,6 +30,16 @@ pub enum AgentServerSignal {
         client_socket_address: SocketAddr,
         message: String,
     },
+    ClientConnectionTransportCreateProxyConnectionFail {
+        client_socket_address: SocketAddr,
+        dst_address: PpaassUnifiedAddress,
+        message: String,
+    },
+    ClientConnectionTransportCreateProxyConnectionSuccess {
+        client_socket_address: SocketAddr,
+        dst_address: PpaassUnifiedAddress,
+        message: String,
+    },
     ClientConnectionTransportCreateSuccess {
         client_socket_address: SocketAddr,
         dst_address: PpaassUnifiedAddress,

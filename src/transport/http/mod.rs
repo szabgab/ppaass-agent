@@ -151,10 +151,32 @@ where
             payload_encryption.clone(),
         )?;
 
-        let proxy_connection = self
+        let proxy_connection = match self
             .proxy_connection_factory
             .create_proxy_connection()
-            .await?;
+            .await
+        {
+            Ok(proxy_connection) => proxy_connection,
+            Err(e) => {
+                if let Err(e) = signal_tx.send(AgentServerSignal::ClientConnectionTransportCreateProxyConnectionFail{
+                    client_socket_address,
+                    dst_address: dst_address.clone(),
+                    message: format!(
+                        "Client connection [{client_socket_address}] connect to [{dst_address}] create proxy connection fail."
+                    ),
+                }).await{
+                    error!("Fail to send signal because of error: {e:?}");
+                }
+                return Err(e);
+            }
+        };
+        if let Err(e) = signal_tx.send(AgentServerSignal::ClientConnectionTransportCreateProxyConnectionSuccess{
+            client_socket_address,
+            dst_address: dst_address.clone(),
+            message: format!("Client connection [{client_socket_address}] connect to [{dst_address}] create proxy connection success."),
+        }).await{
+            error!("Fail to send signal because of error: {e:?}");
+        }
         let (mut proxy_connection_write, mut proxy_connection_read) = proxy_connection.split();
         debug!("Client tcp connection [{src_address}] success to create proxy connection.",);
         proxy_connection_write.send(tcp_init_request).await?;
