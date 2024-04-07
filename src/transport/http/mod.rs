@@ -26,11 +26,11 @@ use crate::{
     proxy::ProxyConnectionFactory,
 };
 
+use crate::server::AgentServerSignal;
 use crate::{
     error::AgentError,
     transport::{http::codec::HttpCodec, ClientTransportTcpDataRelay},
 };
-use crate::server::AgentServerSignal;
 
 use super::tcp_relay;
 
@@ -76,9 +76,12 @@ where
         }
     }
 
-    pub(crate) async fn process(self,  signal_tx: Sender<AgentServerSignal>,) -> Result<(), AgentError> {
+    pub(crate) async fn process(
+        self,
+        signal_tx: Sender<AgentServerSignal>,
+    ) -> Result<(), AgentError> {
         let initial_buf = self.initial_buf;
-        let client_socket_address=self.client_socket_addr;
+        let client_socket_address = self.client_socket_addr;
         let src_address = self.src_address;
         let client_tcp_stream = self.client_tcp_stream;
         let client_socket_addr = self.client_socket_addr;
@@ -179,6 +182,15 @@ where
             ProxyTcpInitResult::Success(transport_id) => transport_id,
             ProxyTcpInitResult::Fail(reason) => {
                 error!("Client http tcp connection [{src_address}] fail to initialize tcp connection with proxy because of reason: {reason:?}");
+                if let Err(e) = signal_tx.send(AgentServerSignal::ClientConnectionTransportCreateFail{
+                    client_socket_address,
+                    dst_address: dst_address.clone(),
+                    message: format!(
+                        "Client connection [{client_socket_address}] connect to [{dst_address}] fail."
+                    ),
+                }).await{
+                    error!("Fail to send signal because of error: {e:?}");
+                }
                 return Err(AgentError::Other(format!(
                     "Client http tcp connection [{src_address}] fail to initialize tcp connection with proxy because of reason: {reason:?}"
                 )));
@@ -199,6 +211,19 @@ where
             io: client_tcp_stream,
             ..
         } = http_framed.into_parts();
+
+        if let Err(e) = signal_tx
+            .send(AgentServerSignal::ClientConnectionTransportCreateSuccess {
+                client_socket_address,
+                dst_address: dst_address.clone(),
+                message: format!(
+                        "Client connection [{client_socket_address}] connect to [{dst_address}] success."
+                    ),
+            })
+            .await
+        {
+            error!("Fail to send signal because of error: {e:?}");
+        }
         tcp_relay(
             &self.config,
             ClientTransportTcpDataRelay {
@@ -212,7 +237,7 @@ where
                 init_data,
                 payload_encryption,
             },
-            signal_tx
+            signal_tx,
         )
         .await
     }
