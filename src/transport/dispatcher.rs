@@ -1,4 +1,4 @@
-use std::sync::Arc;
+use std::sync::{atomic::AtomicU32, Arc};
 use std::{mem::size_of, net::SocketAddr};
 
 use bytes::BytesMut;
@@ -15,7 +15,10 @@ use crate::{
     config::AgentConfig,
     error::AgentError,
     proxy::ProxyConnectionFactory,
-    transport::{http::HttpClientTransport, socks::Socks5ClientTransport},
+    transport::{
+        http::HttpClientTransport,
+        socks::{Socks5ClientTransport, Socks5ClientTransportCreateRequest},
+    },
     SOCKS_V4, SOCKS_V5,
 };
 
@@ -83,6 +86,8 @@ where
         &self,
         client_tcp_stream: TcpStream,
         client_socket_address: SocketAddr,
+        upload_speed: Arc<AtomicU32>,
+        download_speed: Arc<AtomicU32>,
     ) -> Result<ClientTransport<F>, AgentError> {
         let mut client_message_framed = Framed::with_capacity(
             client_tcp_stream,
@@ -113,14 +118,19 @@ where
                 } = client_message_framed.into_parts();
                 debug!("Client tcp connection [{client_socket_address}] begin to serve socks 5 protocol");
                 Ok(ClientTransport::Socks5(Socks5ClientTransport::new(
-                    client_tcp_stream,
-                    client_socket_address.into(),
-                    initial_buf,
-                    client_socket_address,
-                    self.config.clone(),
-                    self.proxy_connection_factory.clone(),
+                    Socks5ClientTransportCreateRequest {
+                        client_tcp_stream,
+                        src_address: client_socket_address.into(),
+                        initial_buf,
+                        client_socket_addr: client_socket_address,
+                        config: self.config.clone(),
+                        proxy_connection_factory: self.proxy_connection_factory.clone(),
+                        upload_speed,
+                        download_speed,
+                    },
                 )))
             }
+
             ClientProtocol::Socks4 => {
                 // For socks4 protocol
                 error!("Client tcp connection [{client_socket_address}] do not support socks v4 protocol");
@@ -143,6 +153,8 @@ where
                     client_socket_address,
                     self.config.clone(),
                     self.proxy_connection_factory.clone(),
+                    upload_speed,
+                    download_speed,
                 )))
             }
         }

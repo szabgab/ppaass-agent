@@ -2,8 +2,11 @@ pub(crate) mod dispatcher;
 mod http;
 mod socks;
 
-use std::net::SocketAddr;
-use std::time::Duration;
+use std::{
+    net::SocketAddr,
+    sync::{atomic::AtomicU32, Arc},
+};
+use std::{sync::atomic::Ordering, time::Duration};
 
 use crate::{config::AgentConfig, error::AgentError};
 
@@ -43,6 +46,8 @@ where
     proxy_connection_read: SplitStream<Framed<TimeoutStream<TcpStream>, PpaassProxyEdgeCodec<F>>>,
     init_data: Option<Bytes>,
     payload_encryption: PpaassMessagePayloadEncryption,
+    upload_speed: Arc<AtomicU32>,
+    download_speed: Arc<AtomicU32>,
 }
 
 async fn tcp_relay<F>(
@@ -64,6 +69,8 @@ where
         proxy_connection_read,
         init_data,
         payload_encryption,
+        upload_speed,
+        download_speed,
     } = tcp_relay_info;
     debug!(
         "Agent going to relay tcp data from source: {src_address} to destination: {dst_address}"
@@ -95,17 +102,20 @@ where
         let transport_id = transport_id.clone();
         let dst_address = dst_address.clone();
         let signal_tx = signal_tx.clone();
+
         tokio::spawn(async move {
             // Forward client data to proxy
             let client_io_read = TokioStreamExt::fuse(client_io_read);
             if let Err(e) = TokioStreamExt::map_while(client_io_read, |client_message| {
                 let client_message = client_message.ok()?;
+                let message_size = client_message.len() as u32;
                 let tcp_data = PpaassMessageGenerator::generate_agent_tcp_data_message(
                     user_token.to_string(),
                     payload_encryption.clone(),
                     client_message.freeze(),
                 )
                 .ok()?;
+                upload_speed.fetch_add(message_size, Ordering::Relaxed);
                 Some(Ok(tcp_data))
             })
             .forward(&mut proxy_connection_write)
@@ -144,6 +154,8 @@ where
                 error!("Fail to parse proxy message payload because of not a tcp data");
                 return None;
             };
+            let download_message_len = content.len() as u32;
+            download_speed.fetch_add(download_message_len, Ordering::Relaxed);
             Some(Ok(BytesMut::from_iter(content)))
         })
         .forward(&mut client_io_write)

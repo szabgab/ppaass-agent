@@ -1,8 +1,8 @@
 pub(crate) mod codec;
 
 use bytecodec::{bytes::BytesEncoder, EncodeExt};
-use std::net::SocketAddr;
 use std::sync::Arc;
+use std::{net::SocketAddr, sync::atomic::AtomicU32};
 
 use bytes::{Bytes, BytesMut};
 
@@ -52,6 +52,8 @@ where
     client_socket_addr: SocketAddr,
     config: Arc<AgentConfig>,
     proxy_connection_factory: Arc<ProxyConnectionFactory<F>>,
+    upload_speed: Arc<AtomicU32>,
+    download_speed: Arc<AtomicU32>,
 }
 
 impl<F> HttpClientTransport<F>
@@ -65,6 +67,8 @@ where
         client_socket_addr: SocketAddr,
         config: Arc<AgentConfig>,
         proxy_connection_factory: Arc<ProxyConnectionFactory<F>>,
+        upload_speed: Arc<AtomicU32>,
+        download_speed: Arc<AtomicU32>,
     ) -> Self {
         Self {
             client_tcp_stream,
@@ -73,6 +77,8 @@ where
             client_socket_addr,
             config,
             proxy_connection_factory,
+            upload_speed,
+            download_speed,
         }
     }
 
@@ -80,6 +86,8 @@ where
         self,
         signal_tx: Sender<AgentServerSignal>,
     ) -> Result<(), AgentError> {
+        let upload_speed = self.upload_speed;
+        let download_speed = self.download_speed;
         let initial_buf = self.initial_buf;
         let client_socket_address = self.client_socket_addr;
         let src_address = self.src_address;
@@ -258,6 +266,8 @@ where
                 proxy_connection_read,
                 init_data,
                 payload_encryption,
+                upload_speed,
+                download_speed,
             },
             signal_tx,
         )

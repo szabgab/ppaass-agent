@@ -1,8 +1,11 @@
 mod codec;
 mod message;
 
-use std::net::{SocketAddr, ToSocketAddrs};
 use std::sync::Arc;
+use std::{
+    net::{SocketAddr, ToSocketAddrs},
+    sync::atomic::AtomicU32,
+};
 
 use bytes::{Bytes, BytesMut};
 
@@ -50,37 +53,48 @@ use crate::{
 
 use super::tcp_relay;
 
+pub(crate) struct Socks5ClientTransportCreateRequest<F>
+where
+    F: RsaCryptoFetcher + Send + Sync + 'static,
+{
+    pub client_tcp_stream: TcpStream,
+    pub src_address: PpaassUnifiedAddress,
+    pub initial_buf: BytesMut,
+    pub client_socket_addr: SocketAddr,
+    pub config: Arc<AgentConfig>,
+    pub proxy_connection_factory: Arc<ProxyConnectionFactory<F>>,
+    pub upload_speed: Arc<AtomicU32>,
+    pub download_speed: Arc<AtomicU32>,
+}
+
 pub(crate) struct Socks5ClientTransport<F>
 where
     F: RsaCryptoFetcher + Send + Sync + 'static,
 {
+    config: Arc<AgentConfig>,
     client_tcp_stream: TcpStream,
     src_address: PpaassUnifiedAddress,
     initial_buf: BytesMut,
     client_socket_addr: SocketAddr,
-    config: Arc<AgentConfig>,
     proxy_connection_factory: Arc<ProxyConnectionFactory<F>>,
+    upload_speed: Arc<AtomicU32>,
+    download_speed: Arc<AtomicU32>,
 }
 
 impl<F> Socks5ClientTransport<F>
 where
     F: RsaCryptoFetcher + Send + Sync + 'static,
 {
-    pub(crate) fn new(
-        client_tcp_stream: TcpStream,
-        src_address: PpaassUnifiedAddress,
-        initial_buf: BytesMut,
-        client_socket_addr: SocketAddr,
-        config: Arc<AgentConfig>,
-        proxy_connection_factory: Arc<ProxyConnectionFactory<F>>,
-    ) -> Self {
+    pub(crate) fn new(create_request: Socks5ClientTransportCreateRequest<F>) -> Self {
         Self {
-            client_tcp_stream,
-            src_address,
-            initial_buf,
-            client_socket_addr,
-            config,
-            proxy_connection_factory,
+            config: create_request.config,
+            client_tcp_stream: create_request.client_tcp_stream,
+            src_address: create_request.src_address,
+            initial_buf: create_request.initial_buf,
+            client_socket_addr: create_request.client_socket_addr,
+            proxy_connection_factory: create_request.proxy_connection_factory,
+            upload_speed: create_request.upload_speed,
+            download_speed: create_request.download_speed,
         }
     }
 
@@ -158,6 +172,8 @@ where
                     client_socket_address,
                     socks5_init_framed,
                     signal_tx,
+                    self.upload_speed,
+                    self.download_speed,
                 )
                 .await
             }
@@ -310,6 +326,8 @@ where
         client_socket_address: SocketAddr,
         mut socks5_init_framed: Framed<TcpStream, Socks5InitCommandContentCodec>,
         signal_tx: Sender<AgentServerSignal>,
+        upload_speed: Arc<AtomicU32>,
+        download_speed: Arc<AtomicU32>,
     ) -> Result<(), AgentError> {
         match &dst_address {
             PpaassUnifiedAddress::Ip(socket_addr) => {
@@ -474,6 +492,8 @@ where
                 proxy_connection_read,
                 init_data: None,
                 payload_encryption,
+                upload_speed,
+                download_speed,
             },
             signal_tx,
         )
