@@ -85,8 +85,8 @@ where
         &self,
         client_tcp_stream: TcpStream,
         client_socket_address: SocketAddr,
-        upload_speed: Arc<AtomicU32>,
-        download_speed: Arc<AtomicU32>,
+        upload_bytes_amount: Arc<AtomicU32>,
+        download_bytes_amount: Arc<AtomicU32>,
     ) -> Result<ClientTransport<F>, AgentError> {
         let mut client_message_framed = Framed::with_capacity(
             client_tcp_stream,
@@ -112,8 +112,8 @@ where
             client_socket_addr: client_socket_address,
             config: self.config.clone(),
             proxy_connection_factory: self.proxy_connection_factory.clone(),
-            upload_speed,
-            download_speed,
+            upload_bytes_amount,
+            download_bytes_amount,
         };
 
         match client_protocol {

@@ -64,8 +64,8 @@ where
     pub client_socket_address: SocketAddr,
     pub socks5_init_framed: Framed<TcpStream, Socks5InitCommandContentCodec>,
     pub signal_tx: Sender<AgentServerSignal>,
-    pub upload_speed: Arc<AtomicU32>,
-    pub download_speed: Arc<AtomicU32>,
+    pub upload_bytes_amount: Arc<AtomicU32>,
+    pub download_bytes_amount: Arc<AtomicU32>,
 }
 
 pub(crate) struct Socks5ClientTransport<F>
@@ -78,8 +78,8 @@ where
     initial_buf: BytesMut,
     client_socket_addr: SocketAddr,
     proxy_connection_factory: Arc<ProxyConnectionFactory<F>>,
-    upload_speed: Arc<AtomicU32>,
-    download_speed: Arc<AtomicU32>,
+    upload_bytes_amount: Arc<AtomicU32>,
+    download_bytes_amount: Arc<AtomicU32>,
 }
 
 impl<F> Socks5ClientTransport<F>
@@ -98,8 +98,8 @@ where
             initial_buf,
             client_socket_addr: create_request.client_socket_addr,
             proxy_connection_factory: create_request.proxy_connection_factory,
-            upload_speed: create_request.upload_speed,
-            download_speed: create_request.download_speed,
+            upload_bytes_amount: create_request.upload_bytes_amount,
+            download_bytes_amount: create_request.download_bytes_amount,
         }
     }
 
@@ -177,8 +177,8 @@ where
                     client_socket_address,
                     socks5_init_framed,
                     signal_tx,
-                    upload_speed: self.upload_speed,
-                    download_speed: self.download_speed,
+                    upload_bytes_amount: self.upload_bytes_amount,
+                    download_bytes_amount: self.download_bytes_amount,
                 })
                 .await
             }
@@ -334,8 +334,8 @@ where
             client_socket_address,
             mut socks5_init_framed,
             signal_tx,
-            upload_speed,
-            download_speed,
+            upload_bytes_amount,
+            download_bytes_amount,
         } = request;
         match &dst_address {
             PpaassUnifiedAddress::Ip(socket_addr) => {
@@ -500,8 +500,8 @@ where
                 proxy_connection_read,
                 init_data: None,
                 payload_encryption,
-                upload_speed,
-                download_speed,
+                upload_bytes_amount,
+                download_bytes_amount,
             },
             signal_tx,
         )

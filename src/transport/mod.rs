@@ -47,8 +47,8 @@ where
     proxy_connection_read: SplitStream<Framed<TimeoutStream<TcpStream>, PpaassProxyEdgeCodec<F>>>,
     init_data: Option<Bytes>,
     payload_encryption: PpaassMessagePayloadEncryption,
-    upload_speed: Arc<AtomicU32>,
-    download_speed: Arc<AtomicU32>,
+    upload_bytes_amount: Arc<AtomicU32>,
+    download_bytes_amount: Arc<AtomicU32>,
 }
 
 async fn tcp_relay<F>(
@@ -70,8 +70,8 @@ where
         proxy_connection_read,
         init_data,
         payload_encryption,
-        upload_speed,
-        download_speed,
+        upload_bytes_amount,
+        download_bytes_amount,
     } = tcp_relay_info;
     debug!(
         "Agent going to relay tcp data from source: {src_address} to destination: {dst_address}"
@@ -116,7 +116,7 @@ where
                     client_message.freeze(),
                 )
                 .ok()?;
-                upload_speed.fetch_add(message_size, Ordering::Relaxed);
+                upload_bytes_amount.fetch_add(message_size, Ordering::Relaxed);
                 Some(Ok(tcp_data))
             })
             .forward(&mut proxy_connection_write)
@@ -156,7 +156,7 @@ where
                 return None;
             };
             let download_message_len = content.len() as u32;
-            download_speed.fetch_add(download_message_len, Ordering::Relaxed);
+            download_bytes_amount.fetch_add(download_message_len, Ordering::Relaxed);
             Some(Ok(BytesMut::from_iter(content)))
         })
         .forward(&mut client_io_write)

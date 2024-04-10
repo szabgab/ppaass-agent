@@ -52,8 +52,8 @@ where
     client_socket_addr: SocketAddr,
     config: Arc<AgentConfig>,
     proxy_connection_factory: Arc<ProxyConnectionFactory<F>>,
-    upload_speed: Arc<AtomicU32>,
-    download_speed: Arc<AtomicU32>,
+    upload_bytes_amount: Arc<AtomicU32>,
+    download_bytes_amount: Arc<AtomicU32>,
 }
 
 impl<F> HttpClientTransport<F>
@@ -72,8 +72,8 @@ where
             client_socket_addr: request.client_socket_addr,
             config: request.config,
             proxy_connection_factory: request.proxy_connection_factory,
-            upload_speed: request.upload_speed,
-            download_speed: request.download_speed,
+            upload_bytes_amount: request.upload_bytes_amount,
+            download_bytes_amount: request.download_bytes_amount,
         }
     }
 
@@ -81,8 +81,8 @@ where
         self,
         signal_tx: Sender<AgentServerSignal>,
     ) -> Result<(), AgentError> {
-        let upload_speed = self.upload_speed;
-        let download_speed = self.download_speed;
+        let upload_bytes_amount = self.upload_bytes_amount;
+        let download_bytes_amount = self.download_bytes_amount;
         let initial_buf = self.initial_buf;
         let client_socket_address = self.client_socket_addr;
         let src_address = self.src_address;
@@ -261,8 +261,8 @@ where
                 proxy_connection_read,
                 init_data,
                 payload_encryption,
-                upload_speed,
-                download_speed,
+                upload_bytes_amount,
+                download_bytes_amount,
             },
             signal_tx,
         )

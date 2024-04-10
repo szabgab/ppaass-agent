@@ -7,7 +7,7 @@ use crate::{
 use std::{
     fmt::Debug,
     sync::{atomic::Ordering::Relaxed, Arc},
-    time::Duration,
+    time::{Duration, SystemTime},
 };
 use std::{net::SocketAddr, sync::atomic::AtomicU32};
 
@@ -26,8 +26,8 @@ const AGENT_SERVER_RUNTIME_NAME: &str = "AGENT-SERVER";
 
 #[derive(Debug)]
 pub enum AgentServerSignal {
-    DownloadSpeed(f32),
-    UploadSpeed(f32),
+    DownloadBytesAmount(f32),
+    UploadBytesAmount(f32),
     FailToListen(String),
     SuccessToListen(String),
     ClientConnectionAcceptSuccess {
@@ -89,8 +89,8 @@ pub struct AgentServer {
     config: Arc<AgentConfig>,
     runtime: Runtime,
     client_transport_dispatcher: Arc<ClientTransportDispatcher<AgentServerRsaCryptoFetcher>>,
-    upload_speed: AtomicU32,
-    download_speed: AtomicU32,
+    upload_bytes_amount: Arc<AtomicU32>,
+    download_bytes_amount: Arc<AtomicU32>,
 }
 
 impl AgentServer {
@@ -110,8 +110,8 @@ impl AgentServer {
             config,
             runtime,
             client_transport_dispatcher: Arc::new(client_transport_dispatcher),
-            upload_speed: AtomicU32::new(0),
-            download_speed: AtomicU32::new(0),
+            upload_bytes_amount: Default::default(),
+            download_bytes_amount: Default::default(),
         })
     }
     async fn accept_client_connection(
@@ -126,8 +126,8 @@ impl AgentServer {
         config: Arc<AgentConfig>,
         client_transport_dispatcher: Arc<ClientTransportDispatcher<AgentServerRsaCryptoFetcher>>,
         signal_tx: Sender<AgentServerSignal>,
-        upload_speed: AtomicU32,
-        download_speed: AtomicU32,
+        upload_bytes_amount: Arc<AtomicU32>,
+        download_bytes_amount: Arc<AtomicU32>,
     ) -> Result<(), AgentError> {
         let agent_server_bind_addr = if config.ipv6() {
             format!("::1:{}", config.port())
@@ -160,22 +160,33 @@ impl AgentServer {
                 AgentError::Other(format!("Fail to send signal because of error: {e:?}"))
             })?;
 
-        let upload_speed = Arc::new(upload_speed);
-        let download_speed = Arc::new(download_speed);
         {
-            let upload_speed = upload_speed.clone();
-            let download_speed = download_speed.clone();
+            let upload_bytes_amount = upload_bytes_amount.clone();
+            let download_bytes_amount = download_bytes_amount.clone();
             let signal_tx = signal_tx.clone();
             tokio::spawn(async move {
-                let mut speed_count_interval = interval(Duration::from_secs(60));
+                let start_time = SystemTime::now();
+                let mut signal_interval = interval(Duration::from_secs(5));
                 loop {
-                    speed_count_interval.tick().await;
-                    let upload_speed_val = upload_speed.fetch_add(0, Relaxed);
-                    let upload_speed_val = upload_speed_val as f32 / (1024 * 1024 * 60) as f32;
-                    let download_speed_val = download_speed.fetch_add(0, Relaxed);
-                    let download_speed_val = download_speed_val as f32 / (1024 * 1024 * 60) as f32;
+                    signal_interval.tick().await;
+                    let elapsed = match start_time.elapsed() {
+                        Ok(elapsed) => elapsed,
+                        Err(e) => {
+                            error!("Fail to count elapsed because of error: {e:?}");
+                            return;
+                        }
+                    };
+                    let elapsed_seconds = elapsed.as_secs();
+                    let upload_bytes_amount_val = upload_bytes_amount.fetch_add(0, Relaxed);
+                    let upload_bytes_amount_val =
+                        upload_bytes_amount_val as f32 / (1024 * 1024 * elapsed_seconds) as f32;
+                    let download_bytes_amount_val = download_bytes_amount.fetch_add(0, Relaxed);
+                    let download_bytes_amount_val =
+                        download_bytes_amount_val as f32 / (1024 * 1024 * elapsed_seconds) as f32;
                     if let Err(e) = signal_tx
-                        .send(AgentServerSignal::UploadSpeed(upload_speed_val))
+                        .send(AgentServerSignal::UploadBytesAmount(
+                            upload_bytes_amount_val,
+                        ))
                         .await
                         .map_err(|e| {
                             AgentError::Other(format!(
@@ -186,7 +197,9 @@ impl AgentServer {
                         error!("Fail to send upload speed singnal because of error: {e:?}")
                     };
                     if let Err(e) = signal_tx
-                        .send(AgentServerSignal::DownloadSpeed(download_speed_val))
+                        .send(AgentServerSignal::DownloadBytesAmount(
+                            download_bytes_amount_val,
+                        ))
                         .await
                         .map_err(|e| {
                             AgentError::Other(format!(
@@ -196,8 +209,6 @@ impl AgentServer {
                     {
                         error!("Fail to send download speed singnal because of error: {e:?}")
                     };
-                    upload_speed.store(0, Relaxed);
-                    download_speed.store(0, Relaxed);
                 }
             });
         }
@@ -224,8 +235,8 @@ impl AgentServer {
                         client_socket_address,
                         client_transport_dispatcher.clone(),
                         signal_tx.clone(),
-                        upload_speed.clone(),
-                        download_speed.clone(),
+                        upload_bytes_amount.clone(),
+                        download_bytes_amount.clone(),
                     );
                 }
                 Err(e) => {
@@ -253,8 +264,8 @@ impl AgentServer {
                 self.config,
                 self.client_transport_dispatcher,
                 server_signal_tx,
-                self.download_speed,
-                self.upload_speed,
+                self.download_bytes_amount,
+                self.upload_bytes_amount,
             )
             .await
             {
@@ -275,16 +286,16 @@ impl AgentServer {
         client_socket_address: SocketAddr,
         client_transport_dispatcher: Arc<ClientTransportDispatcher<AgentServerRsaCryptoFetcher>>,
         signal_tx: Sender<AgentServerSignal>,
-        upload_speed: Arc<AtomicU32>,
-        download_speed: Arc<AtomicU32>,
+        upload_bytes_amount: Arc<AtomicU32>,
+        download_bytes_amount: Arc<AtomicU32>,
     ) {
         tokio::spawn(async move {
             let client_transport = match client_transport_dispatcher
                 .dispatch(
                     client_tcp_stream,
                     client_socket_address,
-                    upload_speed,
-                    download_speed,
+                    upload_bytes_amount,
+                    download_bytes_amount,
                 )
                 .await
             {

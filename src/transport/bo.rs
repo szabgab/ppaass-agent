@@ -16,6 +16,6 @@ where
     pub client_socket_addr: SocketAddr,
     pub config: Arc<AgentConfig>,
     pub proxy_connection_factory: Arc<ProxyConnectionFactory<F>>,
-    pub upload_speed: Arc<AtomicU32>,
-    pub download_speed: Arc<AtomicU32>,
+    pub upload_bytes_amount: Arc<AtomicU32>,
+    pub download_bytes_amount: Arc<AtomicU32>,
 }
