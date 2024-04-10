@@ -32,7 +32,7 @@ use crate::{
     transport::{http::codec::HttpCodec, ClientTransportTcpDataRelay},
 };
 
-use super::tcp_relay;
+use super::{bo::ClientTransportCreateRequest, tcp_relay};
 
 const HTTPS_SCHEMA: &str = "https";
 const SCHEMA_SEP: &str = "://";
@@ -61,24 +61,19 @@ where
     F: RsaCryptoFetcher + Send + Sync + 'static,
 {
     pub(crate) fn new(
+        request: ClientTransportCreateRequest<F>,
         client_tcp_stream: TcpStream,
-        src_address: PpaassUnifiedAddress,
         initial_buf: BytesMut,
-        client_socket_addr: SocketAddr,
-        config: Arc<AgentConfig>,
-        proxy_connection_factory: Arc<ProxyConnectionFactory<F>>,
-        upload_speed: Arc<AtomicU32>,
-        download_speed: Arc<AtomicU32>,
     ) -> Self {
         Self {
             client_tcp_stream,
-            src_address,
+            src_address: request.src_address,
             initial_buf,
-            client_socket_addr,
-            config,
-            proxy_connection_factory,
-            upload_speed,
-            download_speed,
+            client_socket_addr: request.client_socket_addr,
+            config: request.config,
+            proxy_connection_factory: request.proxy_connection_factory,
+            upload_speed: request.upload_speed,
+            download_speed: request.download_speed,
         }
     }
 

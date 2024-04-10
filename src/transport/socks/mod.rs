@@ -51,18 +51,19 @@ use crate::{
     },
 };
 
-use super::tcp_relay;
+use super::{bo::ClientTransportCreateRequest, tcp_relay};
 
-pub(crate) struct Socks5ClientTransportCreateRequest<F>
+struct Socks5HandleConnectCommandRequest<'config, 'proxyfactory, F>
 where
     F: RsaCryptoFetcher + Send + Sync + 'static,
 {
-    pub client_tcp_stream: TcpStream,
+    pub config: &'config AgentConfig,
+    pub proxy_connection_factory: &'proxyfactory ProxyConnectionFactory<F>,
     pub src_address: PpaassUnifiedAddress,
-    pub initial_buf: BytesMut,
-    pub client_socket_addr: SocketAddr,
-    pub config: Arc<AgentConfig>,
-    pub proxy_connection_factory: Arc<ProxyConnectionFactory<F>>,
+    pub dst_address: PpaassUnifiedAddress,
+    pub client_socket_address: SocketAddr,
+    pub socks5_init_framed: Framed<TcpStream, Socks5InitCommandContentCodec>,
+    pub signal_tx: Sender<AgentServerSignal>,
     pub upload_speed: Arc<AtomicU32>,
     pub download_speed: Arc<AtomicU32>,
 }
@@ -85,12 +86,16 @@ impl<F> Socks5ClientTransport<F>
 where
     F: RsaCryptoFetcher + Send + Sync + 'static,
 {
-    pub(crate) fn new(create_request: Socks5ClientTransportCreateRequest<F>) -> Self {
+    pub(crate) fn new(
+        create_request: ClientTransportCreateRequest<F>,
+        client_tcp_stream: TcpStream,
+        initial_buf: BytesMut,
+    ) -> Self {
         Self {
             config: create_request.config,
-            client_tcp_stream: create_request.client_tcp_stream,
+            client_tcp_stream,
             src_address: create_request.src_address,
-            initial_buf: create_request.initial_buf,
+            initial_buf,
             client_socket_addr: create_request.client_socket_addr,
             proxy_connection_factory: create_request.proxy_connection_factory,
             upload_speed: create_request.upload_speed,
@@ -164,17 +169,17 @@ where
                 .await
             }
             Socks5InitCommandType::Connect => {
-                Self::handle_connect_command(
-                    &self.config,
-                    &self.proxy_connection_factory,
+                Self::handle_connect_command(Socks5HandleConnectCommandRequest {
+                    config: &self.config,
+                    proxy_connection_factory: &self.proxy_connection_factory,
                     src_address,
-                    socks5_init_command.dst_address.into(),
+                    dst_address: socks5_init_command.dst_address.into(),
                     client_socket_address,
                     socks5_init_framed,
                     signal_tx,
-                    self.upload_speed,
-                    self.download_speed,
-                )
+                    upload_speed: self.upload_speed,
+                    download_speed: self.download_speed,
+                })
                 .await
             }
         }
@@ -319,16 +324,19 @@ where
     }
 
     async fn handle_connect_command(
-        config: &AgentConfig,
-        proxy_connection_factory: &ProxyConnectionFactory<F>,
-        src_address: PpaassUnifiedAddress,
-        dst_address: PpaassUnifiedAddress,
-        client_socket_address: SocketAddr,
-        mut socks5_init_framed: Framed<TcpStream, Socks5InitCommandContentCodec>,
-        signal_tx: Sender<AgentServerSignal>,
-        upload_speed: Arc<AtomicU32>,
-        download_speed: Arc<AtomicU32>,
+        request: Socks5HandleConnectCommandRequest<'_, '_, F>,
     ) -> Result<(), AgentError> {
+        let Socks5HandleConnectCommandRequest {
+            config,
+            proxy_connection_factory,
+            src_address,
+            dst_address,
+            client_socket_address,
+            mut socks5_init_framed,
+            signal_tx,
+            upload_speed,
+            download_speed,
+        } = request;
         match &dst_address {
             PpaassUnifiedAddress::Ip(socket_addr) => {
                 if socket_addr.ip().is_multicast() {

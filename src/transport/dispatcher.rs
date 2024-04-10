@@ -16,8 +16,7 @@ use crate::{
     error::AgentError,
     proxy::ProxyConnectionFactory,
     transport::{
-        http::HttpClientTransport,
-        socks::{Socks5ClientTransport, Socks5ClientTransportCreateRequest},
+        bo::ClientTransportCreateRequest, http::HttpClientTransport, socks::Socks5ClientTransport,
     },
     SOCKS_V4, SOCKS_V5,
 };
@@ -108,6 +107,15 @@ where
             }
         };
 
+        let create_client_transport_request = ClientTransportCreateRequest {
+            src_address: client_socket_address.into(),
+            client_socket_addr: client_socket_address,
+            config: self.config.clone(),
+            proxy_connection_factory: self.proxy_connection_factory.clone(),
+            upload_speed,
+            download_speed,
+        };
+
         match client_protocol {
             ClientProtocol::Socks5 => {
                 // For socks5 protocol
@@ -118,16 +126,9 @@ where
                 } = client_message_framed.into_parts();
                 debug!("Client tcp connection [{client_socket_address}] begin to serve socks 5 protocol");
                 Ok(ClientTransport::Socks5(Socks5ClientTransport::new(
-                    Socks5ClientTransportCreateRequest {
-                        client_tcp_stream,
-                        src_address: client_socket_address.into(),
-                        initial_buf,
-                        client_socket_addr: client_socket_address,
-                        config: self.config.clone(),
-                        proxy_connection_factory: self.proxy_connection_factory.clone(),
-                        upload_speed,
-                        download_speed,
-                    },
+                    create_client_transport_request,
+                    client_tcp_stream,
+                    initial_buf,
                 )))
             }
 
@@ -147,14 +148,9 @@ where
                     "Client tcp connection [{client_socket_address}] begin to serve http protocol"
                 );
                 Ok(ClientTransport::Http(HttpClientTransport::new(
+                    create_client_transport_request,
                     client_tcp_stream,
-                    client_socket_address.into(),
                     initial_buf,
-                    client_socket_address,
-                    self.config.clone(),
-                    self.proxy_connection_factory.clone(),
-                    upload_speed,
-                    download_speed,
                 )))
             }
         }
