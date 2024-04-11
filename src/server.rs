@@ -26,8 +26,14 @@ const AGENT_SERVER_RUNTIME_NAME: &str = "AGENT-SERVER";
 
 #[derive(Debug)]
 pub enum AgentServerSignal {
-    DownloadBytesAmount(f32),
-    UploadBytesAmount(f32),
+    DownloadNetworkInfo {
+        bytes_amount: u32,
+        mb_per_second: f32,
+    },
+    UploadNetworkInfo {
+        bytes_amount: u32,
+        mb_per_second: f32,
+    },
     FailToListen(String),
     SuccessToListen(String),
     ClientConnectionAcceptSuccess {
@@ -177,16 +183,17 @@ impl AgentServer {
                         }
                     };
                     let elapsed_seconds = elapsed.as_secs();
-                    let upload_bytes_amount_val = upload_bytes_amount.fetch_add(0, Relaxed);
-                    let upload_bytes_amount_val =
-                        upload_bytes_amount_val as f32 / (1024 * 1024 * elapsed_seconds) as f32;
-                    let download_bytes_amount_val = download_bytes_amount.fetch_add(0, Relaxed);
-                    let download_bytes_amount_val =
-                        download_bytes_amount_val as f32 / (1024 * 1024 * elapsed_seconds) as f32;
+                    let upload_bytes_amount = upload_bytes_amount.fetch_add(0, Relaxed);
+                    let upload_mb_per_sencond =
+                        upload_bytes_amount as f32 / (1024 * 1024 * elapsed_seconds) as f32;
+                    let download_bytes_amount = download_bytes_amount.fetch_add(0, Relaxed);
+                    let download_mb_per_sencond =
+                        download_bytes_amount as f32 / (1024 * 1024 * elapsed_seconds) as f32;
                     if let Err(e) = signal_tx
-                        .send(AgentServerSignal::UploadBytesAmount(
-                            upload_bytes_amount_val,
-                        ))
+                        .send(AgentServerSignal::UploadNetworkInfo {
+                            bytes_amount: upload_bytes_amount,
+                            mb_per_second: upload_mb_per_sencond,
+                        })
                         .await
                         .map_err(|e| {
                             AgentError::Other(format!(
@@ -197,9 +204,10 @@ impl AgentServer {
                         error!("Fail to send upload speed singnal because of error: {e:?}")
                     };
                     if let Err(e) = signal_tx
-                        .send(AgentServerSignal::DownloadBytesAmount(
-                            download_bytes_amount_val,
-                        ))
+                        .send(AgentServerSignal::DownloadNetworkInfo {
+                            bytes_amount: download_bytes_amount,
+                            mb_per_second: download_mb_per_sencond,
+                        })
                         .await
                         .map_err(|e| {
                             AgentError::Other(format!(
