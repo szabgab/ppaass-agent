@@ -7,7 +7,7 @@ use crate::{
 use std::{
     fmt::Debug,
     sync::{atomic::Ordering::Relaxed, Arc},
-    time::{Duration, SystemTime},
+    time::Duration,
 };
 use std::{net::SocketAddr, sync::atomic::AtomicU32};
 
@@ -169,29 +169,29 @@ impl AgentServer {
             let download_bytes_amount = download_bytes_amount.clone();
             let signal_tx = signal_tx.clone();
             tokio::spawn(async move {
-                let start_time = SystemTime::now();
-                let mut signal_interval = interval(Duration::from_secs(5));
+                let tick_time = 3;
+
+                let mut signal_interval = interval(Duration::from_secs(tick_time));
                 loop {
+                    let upload_bytes_amount_pre_val = upload_bytes_amount.fetch_add(0, Relaxed);
+                    let download_bytes_amount_pre_val = download_bytes_amount.fetch_add(0, Relaxed);
                     signal_interval.tick().await;
-                    let elapsed = match start_time.elapsed() {
-                        Ok(elapsed) => elapsed,
-                        Err(e) => {
-                            error!("Fail to count elapsed because of error: {e:?}");
-                            return;
-                        }
-                    };
-                    let elapsed_seconds = elapsed.as_secs();
-                    let upload_bytes_amount = upload_bytes_amount.fetch_add(0, Relaxed);
+                    let upload_bytes_amount_current_val = upload_bytes_amount.fetch_add(0, Relaxed);
                     let upload_mb_per_second =
-                        upload_bytes_amount as f32 / (1024 * 1024 * elapsed_seconds) as f32;
-                    let download_bytes_amount = download_bytes_amount.fetch_add(0, Relaxed);
+                        (upload_bytes_amount_current_val - upload_bytes_amount_pre_val) as f32
+                            / (1024 * 1024 * tick_time) as f32;
+                    let download_bytes_amount_current_val =
+                        download_bytes_amount.fetch_add(0, Relaxed);
                     let download_mb_per_second =
-                        download_bytes_amount as f32 / (1024 * 1024 * elapsed_seconds) as f32;
+                        (download_bytes_amount_current_val - download_bytes_amount_pre_val) as f32
+                            / (1024 * 1024 * tick_time) as f32;
+
                     if let Err(e) = signal_tx
                         .send(AgentServerSignal::NetworkInfo {
-                            upload_bytes_amount,
+                            upload_bytes_amount: upload_bytes_amount_current_val,
                             upload_mb_per_second,
-                            download_bytes_amount,
+
+                            download_bytes_amount: download_bytes_amount_current_val,
                             download_mb_per_second,
                         })
                         .await
