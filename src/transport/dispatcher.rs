@@ -1,4 +1,4 @@
-use std::sync::{atomic::AtomicU32, Arc};
+use std::sync::{atomic::AtomicU64, Arc};
 use std::{mem::size_of, net::SocketAddr};
 
 use bytes::BytesMut;
@@ -85,8 +85,8 @@ where
         &self,
         client_tcp_stream: TcpStream,
         client_socket_address: SocketAddr,
-        upload_bytes_amount: Arc<AtomicU32>,
-        download_bytes_amount: Arc<AtomicU32>,
+        upload_bytes_amount: Arc<AtomicU64>,
+        download_bytes_amount: Arc<AtomicU64>,
     ) -> Result<ClientTransport<F>, AgentError> {
         let mut client_message_framed = Framed::with_capacity(
             client_tcp_stream,

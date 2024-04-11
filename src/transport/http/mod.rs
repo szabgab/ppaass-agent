@@ -1,8 +1,8 @@
 pub(crate) mod codec;
 
 use bytecodec::{bytes::BytesEncoder, EncodeExt};
-use std::sync::Arc;
-use std::{net::SocketAddr, sync::atomic::AtomicU32};
+use std::net::SocketAddr;
+use std::sync::{atomic::AtomicU64, Arc};
 
 use bytes::{Bytes, BytesMut};
 
@@ -52,8 +52,8 @@ where
     client_socket_addr: SocketAddr,
     config: Arc<AgentConfig>,
     proxy_connection_factory: Arc<ProxyConnectionFactory<F>>,
-    upload_bytes_amount: Arc<AtomicU32>,
-    download_bytes_amount: Arc<AtomicU32>,
+    upload_bytes_amount: Arc<AtomicU64>,
+    download_bytes_amount: Arc<AtomicU64>,
 }
 
 impl<F> HttpClientTransport<F>

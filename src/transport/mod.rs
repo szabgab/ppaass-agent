@@ -5,7 +5,7 @@ mod socks;
 
 use std::{
     net::SocketAddr,
-    sync::{atomic::AtomicU32, Arc},
+    sync::{atomic::AtomicU64, Arc},
 };
 use std::{sync::atomic::Ordering, time::Duration};
 
@@ -47,8 +47,8 @@ where
     proxy_connection_read: SplitStream<Framed<TimeoutStream<TcpStream>, PpaassProxyEdgeCodec<F>>>,
     init_data: Option<Bytes>,
     payload_encryption: PpaassMessagePayloadEncryption,
-    upload_bytes_amount: Arc<AtomicU32>,
-    download_bytes_amount: Arc<AtomicU32>,
+    upload_bytes_amount: Arc<AtomicU64>,
+    download_bytes_amount: Arc<AtomicU64>,
 }
 
 async fn tcp_relay<F>(
@@ -109,7 +109,7 @@ where
             let client_io_read = TokioStreamExt::fuse(client_io_read);
             if let Err(e) = TokioStreamExt::map_while(client_io_read, |client_message| {
                 let client_message = client_message.ok()?;
-                let message_size = client_message.len() as u32;
+                let message_size = client_message.len() as u64;
                 let tcp_data = PpaassMessageGenerator::generate_agent_tcp_data_message(
                     user_token.to_string(),
                     payload_encryption.clone(),
@@ -155,7 +155,7 @@ where
                 error!("Fail to parse proxy message payload because of not a tcp data");
                 return None;
             };
-            let download_message_len = content.len() as u32;
+            let download_message_len = content.len() as u64;
             download_bytes_amount.fetch_add(download_message_len, Ordering::Relaxed);
             Some(Ok(BytesMut::from_iter(content)))
         })

@@ -1,6 +1,6 @@
 use std::{
     net::SocketAddr,
-    sync::{atomic::AtomicU32, Arc},
+    sync::{atomic::AtomicU64, Arc},
 };
 
 use ppaass_crypto::crypto::RsaCryptoFetcher;
@@ -16,6 +16,6 @@ where
     pub client_socket_addr: SocketAddr,
     pub config: Arc<AgentConfig>,
     pub proxy_connection_factory: Arc<ProxyConnectionFactory<F>>,
-    pub upload_bytes_amount: Arc<AtomicU32>,
-    pub download_bytes_amount: Arc<AtomicU32>,
+    pub upload_bytes_amount: Arc<AtomicU64>,
+    pub download_bytes_amount: Arc<AtomicU64>,
 }

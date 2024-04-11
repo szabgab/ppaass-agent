@@ -4,12 +4,15 @@ use crate::{
     proxy::ProxyConnectionFactory,
     transport::dispatcher::{ClientTransport, ClientTransportDispatcher},
 };
+use std::net::SocketAddr;
 use std::{
     fmt::Debug,
-    sync::{atomic::Ordering::Relaxed, Arc},
+    sync::{
+        atomic::{AtomicU64, Ordering::Relaxed},
+        Arc,
+    },
     time::Duration,
 };
-use std::{net::SocketAddr, sync::atomic::AtomicU32};
 
 use ppaass_protocol::message::values::address::PpaassUnifiedAddress;
 use tokio::runtime::{Builder, Runtime};
@@ -27,10 +30,10 @@ const AGENT_SERVER_RUNTIME_NAME: &str = "AGENT-SERVER";
 #[derive(Debug)]
 pub enum AgentServerSignal {
     NetworkInfo {
-        upload_bytes_amount: u32,
-        upload_mb_per_second: f32,
-        download_bytes_amount: u32,
-        download_mb_per_second: f32,
+        upload_bytes_amount: u64,
+        upload_mb_per_second: f64,
+        download_bytes_amount: u64,
+        download_mb_per_second: f64,
     },
     FailToListen(String),
     SuccessToListen(String),
@@ -93,8 +96,8 @@ pub struct AgentServer {
     config: Arc<AgentConfig>,
     runtime: Runtime,
     client_transport_dispatcher: Arc<ClientTransportDispatcher<AgentServerRsaCryptoFetcher>>,
-    upload_bytes_amount: Arc<AtomicU32>,
-    download_bytes_amount: Arc<AtomicU32>,
+    upload_bytes_amount: Arc<AtomicU64>,
+    download_bytes_amount: Arc<AtomicU64>,
 }
 
 impl AgentServer {
@@ -130,8 +133,8 @@ impl AgentServer {
         config: Arc<AgentConfig>,
         client_transport_dispatcher: Arc<ClientTransportDispatcher<AgentServerRsaCryptoFetcher>>,
         signal_tx: Sender<AgentServerSignal>,
-        upload_bytes_amount: Arc<AtomicU32>,
-        download_bytes_amount: Arc<AtomicU32>,
+        upload_bytes_amount: Arc<AtomicU64>,
+        download_bytes_amount: Arc<AtomicU64>,
     ) -> Result<(), AgentError> {
         let agent_server_bind_addr = if config.ipv6() {
             format!("::1:{}", config.port())
@@ -178,13 +181,13 @@ impl AgentServer {
                     signal_interval.tick().await;
                     let upload_bytes_amount_current_val = upload_bytes_amount.fetch_add(0, Relaxed);
                     let upload_mb_per_second =
-                        (upload_bytes_amount_current_val - upload_bytes_amount_pre_val) as f32
-                            / (1024 * 1024 * tick_time) as f32;
+                        (upload_bytes_amount_current_val - upload_bytes_amount_pre_val) as f64
+                            / (1024 * 1024 * tick_time) as f64;
                     let download_bytes_amount_current_val =
                         download_bytes_amount.fetch_add(0, Relaxed);
                     let download_mb_per_second =
-                        (download_bytes_amount_current_val - download_bytes_amount_pre_val) as f32
-                            / (1024 * 1024 * tick_time) as f32;
+                        (download_bytes_amount_current_val - download_bytes_amount_pre_val) as f64
+                            / (1024 * 1024 * tick_time) as f64;
 
                     if let Err(e) = signal_tx
                         .send(AgentServerSignal::NetworkInfo {
@@ -280,8 +283,8 @@ impl AgentServer {
         client_socket_address: SocketAddr,
         client_transport_dispatcher: Arc<ClientTransportDispatcher<AgentServerRsaCryptoFetcher>>,
         signal_tx: Sender<AgentServerSignal>,
-        upload_bytes_amount: Arc<AtomicU32>,
-        download_bytes_amount: Arc<AtomicU32>,
+        upload_bytes_amount: Arc<AtomicU64>,
+        download_bytes_amount: Arc<AtomicU64>,
     ) {
         tokio::spawn(async move {
             let client_transport = match client_transport_dispatcher

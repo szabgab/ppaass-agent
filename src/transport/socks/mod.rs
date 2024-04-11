@@ -1,11 +1,8 @@
 mod codec;
 mod message;
 
-use std::sync::Arc;
-use std::{
-    net::{SocketAddr, ToSocketAddrs},
-    sync::atomic::AtomicU32,
-};
+use std::net::{SocketAddr, ToSocketAddrs};
+use std::sync::{atomic::AtomicU64, Arc};
 
 use bytes::{Bytes, BytesMut};
 
@@ -64,8 +61,8 @@ where
     pub client_socket_address: SocketAddr,
     pub socks5_init_framed: Framed<TcpStream, Socks5InitCommandContentCodec>,
     pub signal_tx: Sender<AgentServerSignal>,
-    pub upload_bytes_amount: Arc<AtomicU32>,
-    pub download_bytes_amount: Arc<AtomicU32>,
+    pub upload_bytes_amount: Arc<AtomicU64>,
+    pub download_bytes_amount: Arc<AtomicU64>,
 }
 
 pub(crate) struct Socks5ClientTransport<F>
@@ -78,8 +75,8 @@ where
     initial_buf: BytesMut,
     client_socket_addr: SocketAddr,
     proxy_connection_factory: Arc<ProxyConnectionFactory<F>>,
-    upload_bytes_amount: Arc<AtomicU32>,
-    download_bytes_amount: Arc<AtomicU32>,
+    upload_bytes_amount: Arc<AtomicU64>,
+    download_bytes_amount: Arc<AtomicU64>,
 }
 
 impl<F> Socks5ClientTransport<F>
