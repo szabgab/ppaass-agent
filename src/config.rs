@@ -55,6 +55,10 @@ pub struct AgentConfig {
     /// The timeout for proxy connection write
     #[arg(long, default_value = "120")]
     client_connection_write_timeout: u64,
+
+    /// The timeout for proxy connection write
+    #[arg(long, default_value = "1")]
+    server_signal_tick_interval: u64,
 }
 
 impl AgentConfig {
@@ -137,7 +141,6 @@ impl AgentConfig {
         self.proxy_connection_write_timeout
     }
 
-
     pub fn client_connection_read_timeout(&self) -> u64 {
         self.client_connection_read_timeout
     }
@@ -145,11 +148,19 @@ impl AgentConfig {
         self.client_connection_write_timeout
     }
 
-
     pub fn set_client_connection_read_timeout(&mut self, client_connection_read_timeout: u64) {
         self.client_connection_read_timeout = client_connection_read_timeout;
     }
+
     pub fn set_client_connection_write_timeout(&mut self, client_connection_write_timeout: u64) {
         self.client_connection_write_timeout = client_connection_write_timeout;
+    }
+
+    pub fn server_signal_tick_interval(&self) -> u64 {
+        self.server_signal_tick_interval
+    }
+
+    pub fn set_server_signal_tick_interval(&mut self, server_signal_tick_interval: u64) {
+        self.server_signal_tick_interval = server_signal_tick_interval
     }
 }

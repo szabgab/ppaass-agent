@@ -4,6 +4,7 @@ use crate::{
     proxy::ProxyConnectionFactory,
     transport::dispatcher::{ClientTransport, ClientTransportDispatcher},
 };
+
 use std::net::SocketAddr;
 use std::{
     fmt::Debug,
@@ -171,38 +172,35 @@ impl AgentServer {
             let upload_bytes_amount = upload_bytes_amount.clone();
             let download_bytes_amount = download_bytes_amount.clone();
             let signal_tx = signal_tx.clone();
+            let server_signal_tick_interval_val = config.server_signal_tick_interval();
             tokio::spawn(async move {
-                let tick_time = 3;
-
-                let mut signal_interval = interval(Duration::from_secs(tick_time));
+                let mut server_signal_tick_interval =
+                    interval(Duration::from_secs(server_signal_tick_interval_val));
+                let mb_per_second_div_base = (server_signal_tick_interval_val * 1024 * 1024) as f64;
                 loop {
                     let upload_bytes_amount_pre_val = upload_bytes_amount.fetch_add(0, Relaxed);
                     let download_bytes_amount_pre_val = download_bytes_amount.fetch_add(0, Relaxed);
-                    signal_interval.tick().await;
+                    server_signal_tick_interval.tick().await;
                     let upload_bytes_amount_current_val = upload_bytes_amount.fetch_add(0, Relaxed);
-                    let upload_mb_per_second =
-                        (upload_bytes_amount_current_val - upload_bytes_amount_pre_val) as f64
-                            / (1024 * 1024 * tick_time) as f64;
                     let download_bytes_amount_current_val =
                         download_bytes_amount.fetch_add(0, Relaxed);
+
+                    let upload_mb_per_second =
+                        (upload_bytes_amount_current_val - upload_bytes_amount_pre_val) as f64
+                            / mb_per_second_div_base;
+
                     let download_mb_per_second =
                         (download_bytes_amount_current_val - download_bytes_amount_pre_val) as f64
-                            / (1024 * 1024 * tick_time) as f64;
+                            / mb_per_second_div_base;
 
                     if let Err(e) = signal_tx
                         .send(AgentServerSignal::NetworkInfo {
                             upload_bytes_amount: upload_bytes_amount_current_val,
                             upload_mb_per_second,
-
                             download_bytes_amount: download_bytes_amount_current_val,
                             download_mb_per_second,
                         })
                         .await
-                        .map_err(|e| {
-                            AgentError::Other(format!(
-                                "Fail to send signal because of error: {e:?}"
-                            ))
-                        })
                     {
                         error!("Fail to send upload speed singnal because of error: {e:?}")
                     };
