@@ -26,7 +26,7 @@ use crate::{
     proxy::ProxyConnectionFactory,
 };
 
-use crate::server::AgentServerSignal;
+use crate::event::AgentServerEvent;
 use crate::{
     error::AgentError,
     transport::{http::codec::HttpCodec, ClientTransportTcpDataRelay},
@@ -79,7 +79,7 @@ where
 
     pub(crate) async fn process(
         self,
-        signal_tx: Sender<AgentServerSignal>,
+        signal_tx: Sender<AgentServerEvent>,
     ) -> Result<(), AgentError> {
         let upload_bytes_amount = self.upload_bytes_amount;
         let download_bytes_amount = self.download_bytes_amount;
@@ -161,7 +161,7 @@ where
         {
             Ok(proxy_connection) => proxy_connection,
             Err(e) => {
-                if let Err(e) = signal_tx.send(AgentServerSignal::ClientConnectionTransportCreateProxyConnectionFail{
+                if let Err(e) = signal_tx.send(AgentServerEvent::ClientConnectionTransportCreateProxyConnectionFail{
                     client_socket_address,
                     dst_address: dst_address.clone(),
                     message: format!(
@@ -173,7 +173,7 @@ where
                 return Err(e);
             }
         };
-        if let Err(e) = signal_tx.send(AgentServerSignal::ClientConnectionTransportCreateProxyConnectionSuccess{
+        if let Err(e) = signal_tx.send(AgentServerEvent::ClientConnectionTransportCreateProxyConnectionSuccess{
             client_socket_address,
             dst_address: dst_address.clone(),
             message: format!("Client connection [{client_socket_address}] connect to [{dst_address}] create proxy connection success."),
@@ -207,7 +207,7 @@ where
             ProxyTcpInitResult::Success(transport_id) => transport_id,
             ProxyTcpInitResult::Fail(reason) => {
                 error!("Client http tcp connection [{src_address}] fail to initialize tcp connection with proxy because of reason: {reason:?}");
-                if let Err(e) = signal_tx.send(AgentServerSignal::ClientConnectionTransportCreateFail{
+                if let Err(e) = signal_tx.send(AgentServerEvent::ClientConnectionTransportCreateFail{
                     client_socket_address,
                     dst_address: dst_address.clone(),
                     message: format!(
@@ -238,7 +238,7 @@ where
         } = http_framed.into_parts();
 
         if let Err(e) = signal_tx
-            .send(AgentServerSignal::ClientConnectionTransportCreateSuccess {
+            .send(AgentServerEvent::ClientConnectionTransportCreateSuccess {
                 client_socket_address,
                 dst_address: dst_address.clone(),
                 message: format!(

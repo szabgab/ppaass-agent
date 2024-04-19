@@ -26,7 +26,7 @@ use ppaass_protocol::message::{PpaassAgentMessage, PpaassProxyMessage, PpaassPro
 
 use crate::codec::PpaassProxyEdgeCodec;
 
-use crate::server::AgentServerSignal;
+use crate::event::AgentServerEvent;
 use tokio::net::TcpStream;
 use tokio::sync::mpsc::Sender;
 use tokio_io_timeout::TimeoutStream;
@@ -54,7 +54,7 @@ where
 async fn tcp_relay<F>(
     config: &AgentConfig,
     tcp_relay_info: ClientTransportTcpDataRelay<F>,
-    signal_tx: Sender<AgentServerSignal>,
+    signal_tx: Sender<AgentServerEvent>,
 ) -> Result<(), AgentError>
 where
     F: RsaCryptoFetcher + Send + Sync + 'static,
@@ -130,7 +130,7 @@ where
                 );
             };
             if let Err(e) = signal_tx
-                .send(AgentServerSignal::ClientConnectionReadProxyConnectionWriteClose{
+                .send(AgentServerEvent::ClientConnectionReadProxyConnectionWriteClose{
                     client_socket_address,
                     message:format!(
                         "Client connection read half closed and proxy connection write half closed: {client_socket_address}"
@@ -170,7 +170,7 @@ where
             );
         };
         if let Err(e) = signal_tx
-            .send(AgentServerSignal::ClientConnectionWriteProxyConnectionReadClose{
+            .send(AgentServerEvent::ClientConnectionWriteProxyConnectionReadClose{
                 client_socket_address,
                 message:format!(
                     "Client connection write half closed and proxy connection read half closed: {client_socket_address}"
