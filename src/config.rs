@@ -8,7 +8,7 @@ use clap::{command, Parser};
     about,
     long_about = "The agent part of the ppaass application"
 )]
-pub struct AgentConfig {
+pub struct AgentServerConfig {
     /// The user token
     #[arg(short, long, default_value = "user1")]
     user_token: String,
@@ -61,7 +61,7 @@ pub struct AgentConfig {
     server_signal_tick_interval: u64,
 }
 
-impl AgentConfig {
+impl AgentServerConfig {
     pub fn set_user_token(&mut self, user_token: String) {
         self.user_token = user_token;
     }

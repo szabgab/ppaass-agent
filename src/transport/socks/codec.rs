@@ -1,6 +1,6 @@
 use bytes::{Buf, BufMut, Bytes, BytesMut};
 
-use crate::error::AgentError;
+use crate::error::AgentServerError;
 use tokio_util::codec::{Decoder, Encoder};
 use tracing::error;
 
@@ -16,7 +16,7 @@ pub(crate) struct Socks5AuthCommandContentCodec;
 
 impl Decoder for Socks5AuthCommandContentCodec {
     type Item = Socks5AuthCommand;
-    type Error = AgentError;
+    type Error = AgentServerError;
 
     fn decode(&mut self, src: &mut BytesMut) -> Result<Option<Self::Item>, Self::Error> {
         if src.len() < 2 {
@@ -25,7 +25,7 @@ impl Decoder for Socks5AuthCommandContentCodec {
         let version = src.get_u8();
         if version != SOCKS_V5 {
             error!("The incoming protocol is not for socks 5: {version}.");
-            return Err(AgentError::Other(format!(
+            return Err(AgentServerError::Other(format!(
                 "The incoming protocol is not for socks 5: {version}."
             )));
         }
@@ -39,7 +39,7 @@ impl Decoder for Socks5AuthCommandContentCodec {
 }
 
 impl Encoder<Socks5AuthCommandResult> for Socks5AuthCommandContentCodec {
-    type Error = AgentError;
+    type Error = AgentServerError;
 
     fn encode(
         &mut self,
@@ -57,7 +57,7 @@ pub(crate) struct Socks5InitCommandContentCodec;
 
 impl Decoder for Socks5InitCommandContentCodec {
     type Item = Socks5InitCommand;
-    type Error = AgentError;
+    type Error = AgentServerError;
 
     fn decode(&mut self, src: &mut BytesMut) -> Result<Option<Self::Item>, Self::Error> {
         if src.len() < 4 {
@@ -66,7 +66,7 @@ impl Decoder for Socks5InitCommandContentCodec {
         let version = src.get_u8();
         if version != SOCKS_V5 {
             error!("The incoming protocol is not for socks 5: {version}.");
-            return Err(AgentError::Other(format!(
+            return Err(AgentServerError::Other(format!(
                 "The incoming protocol is not for socks 5: {version}."
             )));
         }
@@ -78,7 +78,7 @@ impl Decoder for Socks5InitCommandContentCodec {
 }
 
 impl Encoder<Socks5InitCommandResult> for Socks5InitCommandContentCodec {
-    type Error = AgentError;
+    type Error = AgentServerError;
 
     fn encode(
         &mut self,

@@ -1,3 +1,7 @@
+use event::AgentServerEvent;
+use tokio::sync::mpsc::Sender;
+use tracing::error;
+
 mod codec;
 pub mod config;
 mod crypto;
@@ -10,3 +14,12 @@ mod transport;
 
 pub const SOCKS_V5: u8 = 5;
 pub const SOCKS_V4: u8 = 4;
+
+pub async fn publish_server_event(
+    server_event_tx: &Sender<AgentServerEvent>,
+    event: AgentServerEvent,
+) {
+    if let Err(e) = server_event_tx.send(event).await {
+        error!("Fail to publish server event because of error: {e:?}");
+    }
+}

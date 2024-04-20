@@ -14,7 +14,7 @@ pub(crate) use auth::*;
 pub(crate) use init::*;
 pub(crate) use udp::*;
 
-use crate::error::AgentError;
+use crate::error::AgentServerError;
 
 const IPV4_FLAG: u8 = 1;
 const IPV6_FLAG: u8 = 4;
@@ -27,9 +27,9 @@ pub(crate) enum Socks5Address {
 }
 
 impl Socks5Address {
-    pub(crate) fn parse(input: &mut impl Buf) -> Result<Socks5Address, AgentError> {
+    pub(crate) fn parse(input: &mut impl Buf) -> Result<Socks5Address, AgentServerError> {
         if !input.has_remaining() {
-            return Err(AgentError::Other(
+            return Err(AgentServerError::Other(
                 "Input bytes exhausted, remaining: 0".to_string(),
             ));
         }
@@ -37,7 +37,7 @@ impl Socks5Address {
         let address = match address_type {
             IPV4_FLAG => {
                 if input.remaining() < 6 {
-                    return Err(AgentError::Other(format!(
+                    return Err(AgentServerError::Other(format!(
                         "Input bytes exhausted, remaining: {}, require: 6",
                         input.remaining()
                     )));
@@ -54,7 +54,7 @@ impl Socks5Address {
             }
             IPV6_FLAG => {
                 if input.remaining() < 18 {
-                    return Err(AgentError::Other(format!(
+                    return Err(AgentServerError::Other(format!(
                         "Input bytes exhausted, remaining: {}, require: 18",
                         input.remaining()
                     )));
@@ -77,14 +77,14 @@ impl Socks5Address {
             }
             DOMAIN_FLAG => {
                 if input.remaining() < 1 {
-                    return Err(AgentError::Other(format!(
+                    return Err(AgentServerError::Other(format!(
                         "Input bytes exhausted, remaining: {}, require: 1",
                         input.remaining()
                     )));
                 }
                 let domain_name_length = input.get_u8() as usize;
                 if input.remaining() < domain_name_length + 2 {
-                    return Err(AgentError::Other(format!(
+                    return Err(AgentServerError::Other(format!(
                         "Input bytes exhausted, remaining: {}, require: {}",
                         input.remaining(),
                         domain_name_length + 2
@@ -102,7 +102,7 @@ impl Socks5Address {
                 Socks5Address::Domain(domain_name, port)
             }
             unknown_addr_type => {
-                return Err(AgentError::Other(format!(
+                return Err(AgentServerError::Other(format!(
                     "Invalid address type: {unknown_addr_type}"
                 )));
             }
@@ -112,7 +112,7 @@ impl Socks5Address {
 }
 
 impl TryFrom<Socks5Address> for SocketAddr {
-    type Error = AgentError;
+    type Error = AgentServerError;
 
     fn try_from(socks5_addr: Socks5Address) -> Result<Self, Self::Error> {
         match socks5_addr {
@@ -120,7 +120,7 @@ impl TryFrom<Socks5Address> for SocketAddr {
             Socks5Address::Domain(host, port) => {
                 let address_string = format!("{host}:{port}");
                 let addresses = address_string.to_socket_addrs()?.collect::<Vec<_>>();
-                let result = addresses.first().ok_or(AgentError::Other(format!(
+                let result = addresses.first().ok_or(AgentServerError::Other(format!(
                     "Can not convert domain to socket address: {address_string}"
                 )))?;
                 Ok(*result)
@@ -185,7 +185,7 @@ impl From<Socks5Address> for PpaassUnifiedAddress {
 }
 
 impl TryFrom<PpaassUnifiedAddress> for Socks5Address {
-    type Error = AgentError;
+    type Error = AgentServerError;
     fn try_from(net_addr: PpaassUnifiedAddress) -> Result<Self, Self::Error> {
         match net_addr {
             PpaassUnifiedAddress::Ip(socket_addr) => Ok(Socks5Address::Ip(socket_addr)),

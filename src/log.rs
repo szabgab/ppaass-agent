@@ -1,18 +1,18 @@
 use std::path::Path;
 use std::str::FromStr;
 
-use crate::config::AgentConfig;
+use crate::config::AgentServerConfig;
 use tracing::level_filters::LevelFilter;
 use tracing_appender::non_blocking::WorkerGuard;
 use tracing_subscriber::fmt::time::ChronoUtc;
 
-use crate::error::AgentError;
+use crate::error::AgentServerError;
 
 const TRACE_FILE_DIR_PATH: &str = "log";
 
 const LOG_FILE_NAME_PREFIX: &str = "ppaass-agent";
 
-pub fn init_log(config: &AgentConfig) -> Result<WorkerGuard,AgentError> {
+pub fn init_log(config: &AgentServerConfig) -> Result<WorkerGuard, AgentServerError> {
     let (trace_file_appender, trace_appender_guard) = tracing_appender::non_blocking(
         tracing_appender::rolling::daily(Path::new(TRACE_FILE_DIR_PATH), LOG_FILE_NAME_PREFIX),
     );
@@ -29,4 +29,3 @@ pub fn init_log(config: &AgentConfig) -> Result<WorkerGuard,AgentError> {
     tracing::subscriber::set_global_default(subscriber).expect("Fail to initialize log system.");
     Ok(trace_appender_guard)
 }
-

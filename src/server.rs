@@ -1,8 +1,11 @@
-use crate::{config::AgentConfig, error::AgentError, event::AgentServerEvent};
+use crate::{
+    config::AgentServerConfig, error::AgentServerError, event::AgentServerEvent,
+    publish_server_event,
+};
 use crate::{
     crypto::AgentServerRsaCryptoFetcher,
     proxy::ProxyConnectionFactory,
-    transport::dispatcher::{ClientTransport, ClientTransportDispatcher},
+    transport::dispatcher::{ClientDispatcher, Tunnel},
 };
 
 use std::net::SocketAddr;
@@ -14,6 +17,7 @@ use std::{
     time::Duration,
 };
 
+use ppaass_protocol::message::values::address::PpaassUnifiedAddress;
 use tokio::runtime::{Builder, Runtime};
 use tokio::sync::mpsc::{channel, Receiver, Sender};
 use tokio::task::JoinHandle;
@@ -43,21 +47,20 @@ impl AgentServerGuard {
 }
 
 pub struct AgentServer {
-    config: Arc<AgentConfig>,
+    config: Arc<AgentServerConfig>,
     runtime: Runtime,
-    client_transport_dispatcher: Arc<ClientTransportDispatcher<AgentServerRsaCryptoFetcher>>,
+    client_dispatcher: ClientDispatcher<AgentServerRsaCryptoFetcher>,
     upload_bytes_amount: Arc<AtomicU64>,
     download_bytes_amount: Arc<AtomicU64>,
 }
 
 impl AgentServer {
-    pub fn new(config: AgentConfig) -> Result<Self, AgentError> {
+    pub fn new(config: AgentServerConfig) -> Result<Self, AgentServerError> {
         let config = Arc::new(config);
         let rsa_crypto_fetcher = AgentServerRsaCryptoFetcher::new(&config)?;
         let proxy_connection_factory =
             ProxyConnectionFactory::new(config.clone(), rsa_crypto_fetcher)?;
-        let client_transport_dispatcher =
-            ClientTransportDispatcher::new(config.clone(), proxy_connection_factory);
+        let client_dispatcher = ClientDispatcher::new(config.clone(), proxy_connection_factory);
         let runtime = Builder::new_multi_thread()
             .enable_all()
             .thread_name(AGENT_SERVER_RUNTIME_NAME)
@@ -66,26 +69,26 @@ impl AgentServer {
         Ok(Self {
             config,
             runtime,
-            client_transport_dispatcher: Arc::new(client_transport_dispatcher),
+            client_dispatcher,
             upload_bytes_amount: Default::default(),
             download_bytes_amount: Default::default(),
         })
     }
     async fn accept_client_connection(
         tcp_listener: &TcpListener,
-    ) -> Result<(TcpStream, SocketAddr), AgentError> {
+    ) -> Result<(TcpStream, SocketAddr), AgentServerError> {
         let (client_tcp_stream, client_socket_address) = tcp_listener.accept().await?;
         client_tcp_stream.set_nodelay(true)?;
         Ok((client_tcp_stream, client_socket_address))
     }
 
     async fn run(
-        config: Arc<AgentConfig>,
-        client_transport_dispatcher: Arc<ClientTransportDispatcher<AgentServerRsaCryptoFetcher>>,
-        signal_tx: Sender<AgentServerEvent>,
+        config: Arc<AgentServerConfig>,
+        client_dispatcher: ClientDispatcher<AgentServerRsaCryptoFetcher>,
+        server_event_tx: Sender<AgentServerEvent>,
         upload_bytes_amount: Arc<AtomicU64>,
         download_bytes_amount: Arc<AtomicU64>,
-    ) -> Result<(), AgentError> {
+    ) -> Result<(), AgentServerError> {
         let agent_server_bind_addr = if config.ipv6() {
             format!("::1:{}", config.port())
         } else {
@@ -95,41 +98,41 @@ impl AgentServer {
         let tcp_listener = match TcpListener::bind(&agent_server_bind_addr).await {
             Ok(tcp_listener) => tcp_listener,
             Err(e) => {
-                signal_tx
-                    .send(AgentServerEvent::FailToListen(format!(
-                        "Fail to listen tcp port: {}",
-                        config.port()
-                    )))
-                    .await
-                    .map_err(|e| {
-                        AgentError::Other(format!("Fail to send signal because of error: {e:?}"))
-                    })?;
-                return Err(AgentError::StdIo(e));
+                error!(
+                    "Fail to listen tcp port {} because of error: {e:?}",
+                    config.port()
+                );
+                publish_server_event(
+                    &server_event_tx,
+                    AgentServerEvent::ServerStartFail {
+                        listening_port: config.port(),
+                        reason: format!("Fail to listen tcp port: {}", config.port()),
+                    },
+                )
+                .await;
+                return Err(AgentServerError::StdIo(e));
             }
         };
-        signal_tx
-            .send(AgentServerEvent::SuccessToListen(format!(
-                "Fail to listen tcp port: {}",
-                config.port()
-            )))
-            .await
-            .map_err(|e| {
-                AgentError::Other(format!("Fail to send signal because of error: {e:?}"))
-            })?;
+        publish_server_event(
+            &server_event_tx,
+            AgentServerEvent::ServerStartSuccess(config.port()),
+        )
+        .await;
 
         {
+            // Start the network state event task
             let upload_bytes_amount = upload_bytes_amount.clone();
             let download_bytes_amount = download_bytes_amount.clone();
-            let signal_tx = signal_tx.clone();
-            let server_signal_tick_interval_val = config.server_signal_tick_interval();
+            let server_event_tx = server_event_tx.clone();
+            let server_event_tick_interval_val = config.server_signal_tick_interval();
             tokio::spawn(async move {
-                let mut server_signal_tick_interval =
-                    interval(Duration::from_secs(server_signal_tick_interval_val));
-                let mb_per_second_div_base = (server_signal_tick_interval_val * 1024 * 1024) as f64;
+                let mut server_event_tick_interval =
+                    interval(Duration::from_secs(server_event_tick_interval_val));
+                let mb_per_second_div_base = (server_event_tick_interval_val * 1024 * 1024) as f64;
                 loop {
                     let upload_bytes_amount_pre_val = upload_bytes_amount.fetch_add(0, Relaxed);
                     let download_bytes_amount_pre_val = download_bytes_amount.fetch_add(0, Relaxed);
-                    server_signal_tick_interval.tick().await;
+                    server_event_tick_interval.tick().await;
                     let upload_bytes_amount_current_val = upload_bytes_amount.fetch_add(0, Relaxed);
                     let download_bytes_amount_current_val =
                         download_bytes_amount.fetch_add(0, Relaxed);
@@ -142,17 +145,18 @@ impl AgentServer {
                         (download_bytes_amount_current_val - download_bytes_amount_pre_val) as f64
                             / mb_per_second_div_base;
 
-                    if let Err(e) = signal_tx
-                        .send(AgentServerEvent::NetworkState {
-                            upload_bytes_amount: upload_bytes_amount_current_val,
+                    publish_server_event(
+                        &server_event_tx,
+                        AgentServerEvent::NetworkState {
+                            upload_mb_amount: upload_bytes_amount_current_val as f64
+                                / (1024 * 1024) as f64,
                             upload_mb_per_second,
-                            download_bytes_amount: download_bytes_amount_current_val,
+                            download_mb_amount: download_bytes_amount_current_val as f64
+                                / (1024 * 1024) as f64,
                             download_mb_per_second,
-                        })
-                        .await
-                    {
-                        error!("Fail to send upload speed singnal because of error: {e:?}")
-                    };
+                        },
+                    )
+                    .await;
                 }
             });
         }
@@ -160,41 +164,18 @@ impl AgentServer {
         loop {
             match Self::accept_client_connection(&tcp_listener).await {
                 Ok((client_tcp_stream, client_socket_address)) => {
-                    signal_tx
-                        .send(AgentServerEvent::ClientConnectionAcceptSuccess {
-                            client_socket_address,
-                            message: format!(
-                                "Success to accept client connection: {client_socket_address}"
-                            ),
-                        })
-                        .await
-                        .map_err(|e| {
-                            AgentError::Other(format!(
-                                "Fail to send signal because of error: {e:?}"
-                            ))
-                        })?;
                     debug!("Accept client tcp connection on address: {client_socket_address}");
                     Self::handle_client_connection(
                         client_tcp_stream,
-                        client_socket_address,
-                        client_transport_dispatcher.clone(),
-                        signal_tx.clone(),
+                        client_socket_address.into(),
+                        client_dispatcher.clone(),
+                        server_event_tx.clone(),
                         upload_bytes_amount.clone(),
                         download_bytes_amount.clone(),
                     );
                 }
                 Err(e) => {
                     error!("Agent server fail to accept client connection because of error: {e:?}");
-                    signal_tx
-                        .send(AgentServerEvent::ClientConnectionAcceptFail(format!(
-                            "Fail to accept client connection because of error: {e}"
-                        )))
-                        .await
-                        .map_err(|e| {
-                            AgentError::Other(format!(
-                                "Fail to send signal because of error: {e:?}"
-                            ))
-                        })?;
                     continue;
                 }
             }
@@ -202,12 +183,12 @@ impl AgentServer {
     }
 
     pub fn start(self) -> (AgentServerGuard, Receiver<AgentServerEvent>) {
-        let (server_signal_tx, server_signal_rx) = channel(1024);
+        let (server_event_tx, server_event_rs) = channel(1024);
         let join_handle = self.runtime.spawn(async move {
             if let Err(e) = Self::run(
                 self.config,
-                self.client_transport_dispatcher,
-                server_signal_tx,
+                self.client_dispatcher,
+                server_event_tx,
                 self.download_bytes_amount,
                 self.upload_bytes_amount,
             )
@@ -221,79 +202,48 @@ impl AgentServer {
                 _join_handle: join_handle,
                 runtime: self.runtime,
             },
-            server_signal_rx,
+            server_event_rs,
         )
     }
 
     fn handle_client_connection(
         client_tcp_stream: TcpStream,
-        client_socket_address: SocketAddr,
-        client_transport_dispatcher: Arc<ClientTransportDispatcher<AgentServerRsaCryptoFetcher>>,
-        signal_tx: Sender<AgentServerEvent>,
+        client_socket_address: PpaassUnifiedAddress,
+        client_dispatcher: ClientDispatcher<AgentServerRsaCryptoFetcher>,
+        server_event_tx: Sender<AgentServerEvent>,
         upload_bytes_amount: Arc<AtomicU64>,
         download_bytes_amount: Arc<AtomicU64>,
     ) {
         tokio::spawn(async move {
-            let client_transport = match client_transport_dispatcher
+            let tunnel = match client_dispatcher
                 .dispatch(
                     client_tcp_stream,
-                    client_socket_address,
+                    &client_socket_address,
+                    &server_event_tx,
                     upload_bytes_amount,
                     download_bytes_amount,
                 )
                 .await
             {
-                Ok(client_transport) => client_transport,
+                Ok(tunnel) => tunnel,
                 Err(e) => {
                     error!("Fail to dispatch client connection [{client_socket_address}] to transport because of error: {e:?}");
-                    if let Err(e) = signal_tx
-                        .send(AgentServerEvent::ClientConnectionBeforeRelayFail {
-                            client_socket_address,
-                            message: format!(
-                                "Fail to process client connection: {client_socket_address}"
-                            ),
-                        })
-                        .await
-                    {
-                        error!("Fail to send signal because of error: {e:?}");
-                    }
                     return;
                 }
             };
-            match client_transport {
-                ClientTransport::Socks5(socks5_transport) => {
-                    if let Err(e) = socks5_transport.process(signal_tx.clone()).await {
-                        error!("Fail to process socks5 client connection [{client_socket_address}] in transport because of error: {e:?}");
-                        if let Err(e) = signal_tx
-                            .send(AgentServerEvent::ClientConnectionBeforeRelayFail{
-                                client_socket_address,
-                                message:format!(
-                                    "Fail to process socks5 client connection: {client_socket_address}"
-                                )
-                            })
-                            .await
-                        {
-                            error!("Fail to send signal because of error: {e:?}");
-                        }
-                    };
+
+            match tunnel {
+                Tunnel::Socks5(socks5_tunnel) => {
+                    if let Err(e) = socks5_tunnel.process(&server_event_tx).await {
+                        error!("Fail to process socks5 tunnel for client connection [{client_socket_address}] because of error: {e:?}");
+                    }
                 }
-                ClientTransport::Http(http_transport) => {
-                    if let Err(e) = http_transport.process(signal_tx.clone()).await {
-                        error!("Fail to process http client connection [{client_socket_address}] in transport because of error: {e:?}");
-                        if let Err(e) = signal_tx
-                            .send(AgentServerEvent::ClientConnectionBeforeRelayFail{
-                                client_socket_address,
-                                message:format!(
-                                    "Fail to process http client connection: {client_socket_address}"
-                                )
-                            })
-                            .await
-                        {
-                            error!("Fail to send signal because of error: {e:?}");
-                        }
-                    };
+                Tunnel::Http(http_transport) => {
+                    if let Err(e) = http_transport.process(&server_event_tx).await {
+                        error!("Fail to process http tunnel for client connection [{client_socket_address}] because of error: {e:?}");
+                    }
                 }
-            };
+            }
         });
     }
 }

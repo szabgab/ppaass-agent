@@ -1,7 +1,6 @@
 pub(crate) mod codec;
 
 use bytecodec::{bytes::BytesEncoder, EncodeExt};
-use std::net::SocketAddr;
 use std::sync::{atomic::AtomicU64, Arc};
 
 use bytes::{Bytes, BytesMut};
@@ -22,17 +21,17 @@ use tracing::{debug, error};
 use url::Url;
 
 use crate::{
-    config::AgentConfig, crypto::AgentServerPayloadEncryptionTypeSelector,
-    proxy::ProxyConnectionFactory,
+    config::AgentServerConfig, crypto::AgentServerPayloadEncryptionTypeSelector,
+    proxy::ProxyConnectionFactory, publish_server_event,
 };
 
 use crate::event::AgentServerEvent;
 use crate::{
-    error::AgentError,
-    transport::{http::codec::HttpCodec, ClientTransportTcpDataRelay},
+    error::AgentServerError,
+    transport::{http::codec::HttpCodec, TunnelTcpDataRelay},
 };
 
-use super::{bo::ClientTransportCreateRequest, tcp_relay};
+use super::{bo::TunnelCreateRequest, tcp_relay};
 
 const HTTPS_SCHEMA: &str = "https";
 const SCHEMA_SEP: &str = "://";
@@ -42,26 +41,26 @@ const HTTP_DEFAULT_PORT: u16 = 80;
 const OK_CODE: u16 = 200;
 const CONNECTION_ESTABLISHED: &str = "Connection Established";
 
-pub(crate) struct HttpClientTransport<F>
+pub(crate) struct HttpTunnel<F>
 where
     F: RsaCryptoFetcher + Send + Sync + 'static,
 {
     client_tcp_stream: TcpStream,
     src_address: PpaassUnifiedAddress,
     initial_buf: BytesMut,
-    client_socket_addr: SocketAddr,
-    config: Arc<AgentConfig>,
+    client_socket_address: PpaassUnifiedAddress,
+    config: Arc<AgentServerConfig>,
     proxy_connection_factory: Arc<ProxyConnectionFactory<F>>,
     upload_bytes_amount: Arc<AtomicU64>,
     download_bytes_amount: Arc<AtomicU64>,
 }
 
-impl<F> HttpClientTransport<F>
+impl<F> HttpTunnel<F>
 where
     F: RsaCryptoFetcher + Send + Sync + 'static,
 {
     pub(crate) fn new(
-        request: ClientTransportCreateRequest<F>,
+        request: TunnelCreateRequest<F>,
         client_tcp_stream: TcpStream,
         initial_buf: BytesMut,
     ) -> Self {
@@ -69,7 +68,7 @@ where
             client_tcp_stream,
             src_address: request.src_address,
             initial_buf,
-            client_socket_addr: request.client_socket_addr,
+            client_socket_address: request.client_socket_address,
             config: request.config,
             proxy_connection_factory: request.proxy_connection_factory,
             upload_bytes_amount: request.upload_bytes_amount,
@@ -79,21 +78,24 @@ where
 
     pub(crate) async fn process(
         self,
-        signal_tx: Sender<AgentServerEvent>,
-    ) -> Result<(), AgentError> {
+        server_event_tx: &Sender<AgentServerEvent>,
+    ) -> Result<(), AgentServerError> {
         let upload_bytes_amount = self.upload_bytes_amount;
         let download_bytes_amount = self.download_bytes_amount;
         let initial_buf = self.initial_buf;
-        let client_socket_address = self.client_socket_addr;
+        let client_socket_address = self.client_socket_address;
         let src_address = self.src_address;
         let client_tcp_stream = self.client_tcp_stream;
-        let client_socket_addr = self.client_socket_addr;
+
         let mut framed_parts = FramedParts::new(client_tcp_stream, HttpCodec::default());
         framed_parts.read_buf = initial_buf;
         let mut http_framed = Framed::from_parts(framed_parts);
-        let http_message = http_framed.next().await.ok_or(AgentError::Other(format!(
-            "Nothing to read from client: {client_socket_addr}"
-        )))??;
+        let http_message = http_framed
+            .next()
+            .await
+            .ok_or(AgentServerError::Other(format!(
+                "Nothing to read from client: {client_socket_address}"
+            )))??;
         let http_method = http_message.method().to_string().to_lowercase();
         let (request_url, init_data) = if http_method == CONNECT_METHOD {
             (
@@ -111,16 +113,17 @@ where
             let encode_result: Bytes = http_data_encoder
                 .encode_into_bytes(http_message)
                 .map_err(|e| {
-                    AgentError::Other(format!(
-                        "Fail to encode http data for client [{client_socket_addr}] because of error: {e:?}"
+                    AgentServerError::Other(format!(
+                        "Fail to encode http data for client [{client_socket_address}] because of error: {e:?}"
                     ))
                 })?
                 .into();
             (request_url, Some(encode_result))
         };
 
-        let parsed_request_url = Url::parse(request_url.as_str())
-            .map_err(|e| AgentError::Other(format!("Fail to parse url because of error: {e:?}")))?;
+        let parsed_request_url = Url::parse(request_url.as_str()).map_err(|e| {
+            AgentServerError::Other(format!("Fail to parse url because of error: {e:?}"))
+        })?;
         let target_port =
             parsed_request_url
                 .port()
@@ -130,12 +133,12 @@ where
                 });
         let target_host = parsed_request_url
             .host()
-            .ok_or(AgentError::Other(format!(
+            .ok_or(AgentServerError::Other(format!(
                 "Fail to parse target host from request url:{parsed_request_url}"
             )))?
             .to_string();
         if target_host.eq("0.0.0.1") || target_host.eq("127.0.0.1") {
-            return Err(AgentError::Other(format!(
+            return Err(AgentServerError::Other(format!(
                 "0.0.0.1 or 127.0.0.1 is not a valid destination address: {target_host}"
             )));
         }
@@ -161,35 +164,56 @@ where
         {
             Ok(proxy_connection) => proxy_connection,
             Err(e) => {
-                if let Err(e) = signal_tx.send(AgentServerEvent::ClientConnectionTransportCreateProxyConnectionFail{
-                    client_socket_address,
-                    dst_address: dst_address.clone(),
-                    message: format!(
-                        "Client connection [{client_socket_address}] connect to [{dst_address}] create proxy connection fail."
+                error!("Client connection [{client_socket_address}] initialize http tunnel from [{src_address}] to [{dst_address}] fail because of error: {e:?}");
+                publish_server_event(server_event_tx, AgentServerEvent::TunnelInitializeFail {
+                    client_socket_address:client_socket_address.clone(),
+                    dst_address: Some(dst_address.clone()),
+                    src_address: Some(src_address.clone()),
+                    reason: format!(
+                        "Client connection [{client_socket_address}] initialize http tunnel from [{src_address}] to [{dst_address}] fail."
                     ),
-                }).await{
-                    error!("Fail to send signal because of error: {e:?}");
-                }
+                }).await;
+
                 return Err(e);
             }
         };
-        if let Err(e) = signal_tx.send(AgentServerEvent::ClientConnectionTransportCreateProxyConnectionSuccess{
-            client_socket_address,
-            dst_address: dst_address.clone(),
-            message: format!("Client connection [{client_socket_address}] connect to [{dst_address}] create proxy connection success."),
-        }).await{
-            error!("Fail to send signal because of error: {e:?}");
-        }
+
         let (mut proxy_connection_write, mut proxy_connection_read) = proxy_connection.split();
         debug!("Client tcp connection [{src_address}] success to create proxy connection.",);
-        proxy_connection_write.send(tcp_init_request).await?;
+        if let Err(e) = proxy_connection_write.send(tcp_init_request).await {
+            error!("Client connection [{client_socket_address}] initialize http tunnel from [{src_address}] to [{dst_address}] fail because of error when create proxy connection: {e:?}");
+            publish_server_event(server_event_tx, AgentServerEvent::TunnelInitializeFail {
+                client_socket_address: client_socket_address.clone(),
+                dst_address: Some(dst_address.clone()),
+                src_address: Some(src_address.clone()),
+                reason: format!("Client connection [{client_socket_address}] initialize http tunnel from [{src_address}] to [{dst_address}] fail because of error when create proxy connection."),
+            }).await;
+            return Err(e);
+        };
 
-        let proxy_message = proxy_connection_read
-            .next()
-            .await
-            .ok_or(AgentError::Other(format!(
-                "Nothing to read from proxy for client: {client_socket_addr}"
-            )))??;
+        let proxy_message = match proxy_connection_read.next().await {
+            Some(Ok(proxy_message)) => proxy_message,
+            Some(Err(e)) => {
+                error!("Client connection [{client_socket_address}] initialize http tunnel from [{src_address}] to [{dst_address}] fail because of error return init message from proxy connection: {e:?}");
+                publish_server_event(server_event_tx, AgentServerEvent::TunnelInitializeFail {
+                    client_socket_address: client_socket_address.clone(),
+                    dst_address: Some(dst_address.clone()),
+                    src_address: Some(src_address.clone()),
+                    reason: format!("Client connection [{client_socket_address}] initialize http tunnel from [{src_address}] to [{dst_address}] fail because of error return init message from proxy connection."),
+                }).await;
+                return Err(e);
+            }
+            None => {
+                error!("Client connection [{client_socket_address}] initialize http tunnel from [{src_address}] to [{dst_address}] fail because of nothing return from proxy connection.");
+                publish_server_event(server_event_tx, AgentServerEvent::TunnelInitializeFail {
+                    client_socket_address:client_socket_address.clone(),
+                    dst_address: Some(dst_address.clone()),
+                    src_address: Some(src_address.clone()),
+                    reason: format!("Client connection [{client_socket_address}] initialize http tunnel from [{src_address}] to [{dst_address}] fail because of nothing return from proxy connection."),
+                }).await;
+                return  Err(AgentServerError::Other(format!("Client connection [{client_socket_address}] initialize http tunnel from [{src_address}] to [{dst_address}] fail because of nothing return from proxy connection.")));
+            }
+        };
 
         let PpaassProxyMessage {
             payload: proxy_message_payload,
@@ -199,29 +223,30 @@ where
         let PpaassProxyMessagePayload::Tcp(ProxyTcpPayload::Init { result, .. }) =
             proxy_message_payload
         else {
-            return Err(AgentError::Other(format!(
-                "Not a tcp init response for client {client_socket_addr}."
-            )));
+            error!("Client connection [{client_socket_address}] initialize http tunnel from [{src_address}] to [{dst_address}] fail because of did not receive init result from proxy connection.");
+            publish_server_event(server_event_tx, AgentServerEvent::TunnelInitializeFail {
+                    client_socket_address:client_socket_address.clone(),
+                    dst_address: Some(dst_address.clone()),
+                    src_address: Some(src_address.clone()),
+                    reason: format!("Client connection [{client_socket_address}] initialize http tunnel from [{src_address}] to [{dst_address}] fail because of did not receive init result from proxy connection."),
+                }).await;
+            return  Err(AgentServerError::Other(format!("Client connection [{client_socket_address}] initialize http tunnel from [{src_address}] to [{dst_address}] fail because of did not receive init result from proxy connection.")));
         };
-        let transport_id = match result {
-            ProxyTcpInitResult::Success(transport_id) => transport_id,
+        let tunnel_id = match result {
+            ProxyTcpInitResult::Success(tunnel_id) => tunnel_id,
             ProxyTcpInitResult::Fail(reason) => {
-                error!("Client http tcp connection [{src_address}] fail to initialize tcp connection with proxy because of reason: {reason:?}");
-                if let Err(e) = signal_tx.send(AgentServerEvent::ClientConnectionTransportCreateFail{
-                    client_socket_address,
-                    dst_address: dst_address.clone(),
-                    message: format!(
-                        "Client connection [{client_socket_address}] connect to [{dst_address}] fail."
-                    ),
-                }).await{
-                    error!("Fail to send signal because of error: {e:?}");
-                }
-                return Err(AgentError::Other(format!(
-                    "Client http tcp connection [{src_address}] fail to initialize tcp connection with proxy because of reason: {reason:?}"
-                )));
+                error!("Client connection [{client_socket_address}] initialize http tunnel from [{src_address}] to [{dst_address}] fail because of reason: {reason:?}");
+                publish_server_event(server_event_tx, AgentServerEvent::TunnelInitializeFail {
+                    client_socket_address:client_socket_address.clone(),
+                    dst_address: Some(dst_address.clone()),
+                    src_address: Some(src_address.clone()),
+                    reason: format!("Client connection [{client_socket_address}] initialize http tunnel from [{src_address}] to [{dst_address}] fail because of reason: {reason:?}")
+                }).await;
+                return Err(AgentServerError::Other(format!("Client connection [{client_socket_address}] initialize http tunnel from [{src_address}] to [{dst_address}] fail because of reason: {reason:?}")));
             }
         };
-        debug!("Client http tcp connection [{src_address}] success to initialize tcp connection with proxy on tunnel: {transport_id}");
+        debug!("Client connection [{client_socket_address}] initialize http tunnel from [{src_address}] to [{dst_address}] success with id: {tunnel_id}");
+
         if init_data.is_none() {
             //For https proxy
             let http_connect_success_response = Response::new(
@@ -230,29 +255,36 @@ where
                 ReasonPhrase::new(CONNECTION_ESTABLISHED).unwrap(),
                 vec![],
             );
-            http_framed.send(http_connect_success_response).await?;
+            if let Err(e) = http_framed.send(http_connect_success_response).await {
+                error!("Client connection [{client_socket_address}] initialize http tunnel from [{src_address}] to [{dst_address}] fail because of error when write OK to client: {e:?}");
+                publish_server_event(server_event_tx, AgentServerEvent::TunnelInitializeFail {
+                    client_socket_address: client_socket_address.clone(),
+                    dst_address: Some(dst_address.clone()),
+                    src_address: Some(src_address.clone()),
+                    reason: format!("Client connection [{client_socket_address}] initialize http tunnel from [{src_address}] to [{dst_address}] fail because of error when write OK to client.")
+                }).await;
+                return Err(e);
+            };
         }
         let FramedParts {
             io: client_tcp_stream,
             ..
         } = http_framed.into_parts();
 
-        if let Err(e) = signal_tx
-            .send(AgentServerEvent::ClientConnectionTransportCreateSuccess {
-                client_socket_address,
-                dst_address: dst_address.clone(),
-                message: format!(
-                        "Client connection [{client_socket_address}] connect to [{dst_address}] success."
-                    ),
-            })
-            .await
-        {
-            error!("Fail to send signal because of error: {e:?}");
-        }
+        publish_server_event(
+            server_event_tx,
+            AgentServerEvent::TunnelInitializeSuccess {
+                client_socket_address: client_socket_address.clone(),
+                dst_address: Some(dst_address.clone()),
+                src_address: Some(src_address.clone()),
+            },
+        )
+        .await;
+
         tcp_relay(
             &self.config,
-            ClientTransportTcpDataRelay {
-                transport_id,
+            TunnelTcpDataRelay {
+                tunnel_id,
                 client_tcp_stream,
                 client_socket_address,
                 src_address,
@@ -264,7 +296,7 @@ where
                 upload_bytes_amount,
                 download_bytes_amount,
             },
-            signal_tx,
+            server_event_tx,
         )
         .await
     }

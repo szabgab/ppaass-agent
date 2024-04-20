@@ -1,4 +1,4 @@
-use crate::error::AgentError;
+use crate::error::AgentServerError;
 use bytes::BytesMut;
 use ppaass_codec::codec::agent::PpaassAgentMessageEncoder;
 use ppaass_codec::codec::proxy::PpaassProxyMessageDecoder;
@@ -30,12 +30,12 @@ impl<F> Encoder<PpaassAgentMessage> for PpaassProxyEdgeCodec<F>
 where
     F: RsaCryptoFetcher,
 {
-    type Error = AgentError;
+    type Error = AgentServerError;
 
     fn encode(&mut self, item: PpaassAgentMessage, dst: &mut BytesMut) -> Result<(), Self::Error> {
         self.encoder
             .encode(item, dst)
-            .map_err(AgentError::ProxyEdgeCodec)
+            .map_err(AgentServerError::ProxyEdgeCodec)
     }
 }
 
@@ -44,9 +44,11 @@ where
     F: RsaCryptoFetcher,
 {
     type Item = PpaassProxyMessage;
-    type Error = AgentError;
+    type Error = AgentServerError;
 
     fn decode(&mut self, src: &mut BytesMut) -> Result<Option<Self::Item>, Self::Error> {
-        self.decoder.decode(src).map_err(AgentError::ProxyEdgeCodec)
+        self.decoder
+            .decode(src)
+            .map_err(AgentServerError::ProxyEdgeCodec)
     }
 }

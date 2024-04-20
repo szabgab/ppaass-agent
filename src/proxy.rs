@@ -9,15 +9,15 @@ use tokio_io_timeout::TimeoutStream;
 use tokio_util::codec::Framed;
 use tracing::{debug, error};
 
-use crate::error::AgentError;
-use crate::{codec::PpaassProxyEdgeCodec, config::AgentConfig};
+use crate::error::AgentServerError;
+use crate::{codec::PpaassProxyEdgeCodec, config::AgentServerConfig};
 
 pub(crate) struct ProxyConnectionFactory<F>
 where
     F: RsaCryptoFetcher,
 {
     proxy_addresses: Vec<SocketAddr>,
-    config: Arc<AgentConfig>,
+    config: Arc<AgentServerConfig>,
     rsa_crypto_fetcher: Arc<F>,
 }
 
@@ -25,7 +25,10 @@ impl<F> ProxyConnectionFactory<F>
 where
     F: RsaCryptoFetcher + Send + Sync + 'static,
 {
-    pub(crate) fn new(config: Arc<AgentConfig>, rsa_crypto_fetcher: F) -> Result<Self, AgentError> {
+    pub(crate) fn new(
+        config: Arc<AgentServerConfig>,
+        rsa_crypto_fetcher: F,
+    ) -> Result<Self, AgentServerError> {
         let proxy_addresses_configuration = config.proxy_addresses();
         let proxy_addresses: Vec<SocketAddr> = proxy_addresses_configuration
             .iter()
@@ -44,7 +47,8 @@ where
 
     pub(crate) async fn create_proxy_connection(
         &self,
-    ) -> Result<Framed<TimeoutStream<TcpStream>, PpaassProxyEdgeCodec<Arc<F>>>, AgentError> {
+    ) -> Result<Framed<TimeoutStream<TcpStream>, PpaassProxyEdgeCodec<Arc<F>>>, AgentServerError>
+    {
         debug!("Take proxy connection from pool.");
         let proxy_tcp_stream = match timeout(
             Duration::from_secs(self.config.connect_to_proxy_timeout()),
@@ -54,7 +58,7 @@ where
         {
             Err(_) => {
                 error!("Fail connect to proxy because of timeout.");
-                return Err(AgentError::Other(format!(
+                return Err(AgentServerError::Other(format!(
                     "Fail to create proxy connection because of timeout: {}",
                     self.config.connect_to_proxy_timeout()
                 )));
@@ -62,7 +66,7 @@ where
             Ok(Ok(proxy_tcp_stream)) => proxy_tcp_stream,
             Ok(Err(e)) => {
                 error!("Fail connect to proxy because of error: {e:?}");
-                return Err(AgentError::StdIo(e));
+                return Err(AgentServerError::StdIo(e));
             }
         };
         debug!("Success connect to proxy.");

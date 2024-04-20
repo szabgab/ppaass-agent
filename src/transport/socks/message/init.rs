@@ -1,4 +1,4 @@
-use crate::error::AgentError;
+use crate::error::AgentServerError;
 use derive_more::Constructor;
 
 use super::Socks5Address;
@@ -11,14 +11,14 @@ pub(crate) enum Socks5InitCommandType {
 }
 
 impl TryFrom<u8> for Socks5InitCommandType {
-    type Error = AgentError;
+    type Error = AgentServerError;
 
     fn try_from(v: u8) -> Result<Self, Self::Error> {
         match v {
             1 => Ok(Socks5InitCommandType::Connect),
             2 => Ok(Socks5InitCommandType::Bind),
             3 => Ok(Socks5InitCommandType::UdpAssociate),
-            unknown_type => Err(AgentError::Other(format!(
+            unknown_type => Err(AgentServerError::Other(format!(
                 "Can not convert byte to socks5 init command type: {unknown_type}"
             ))),
         }
@@ -40,7 +40,7 @@ pub(crate) enum Socks5InitCommandResultStatus {
 }
 
 impl TryFrom<u8> for Socks5InitCommandResultStatus {
-    type Error = AgentError;
+    type Error = AgentServerError;
 
     fn try_from(v: u8) -> Result<Self, Self::Error> {
         match v {
@@ -54,7 +54,7 @@ impl TryFrom<u8> for Socks5InitCommandResultStatus {
             7 => Ok(Socks5InitCommandResultStatus::CommandNotSupported),
             8 => Ok(Socks5InitCommandResultStatus::AddressTypeNotSupported),
             9 => Ok(Socks5InitCommandResultStatus::Unassigned),
-            unknown_status => Err(AgentError::Other(format!(
+            unknown_status => Err(AgentServerError::Other(format!(
                 "Can not convert byte to socks5 init command result status: {unknown_status}"
             ))),
         }

@@ -1,32 +1,33 @@
+use std::mem::size_of;
 use std::sync::{atomic::AtomicU64, Arc};
-use std::{mem::size_of, net::SocketAddr};
 
 use bytes::BytesMut;
 use futures_util::StreamExt;
 
 use ppaass_crypto::crypto::RsaCryptoFetcher;
+use ppaass_protocol::message::values::address::PpaassUnifiedAddress;
 use tracing::{debug, error};
 
-use tokio::net::TcpStream;
+use tokio::{net::TcpStream, sync::mpsc::Sender};
 
 use tokio_util::codec::{Decoder, Framed, FramedParts};
 
 use crate::{
-    config::AgentConfig,
-    error::AgentError,
+    config::AgentServerConfig,
+    error::AgentServerError,
+    event::AgentServerEvent,
     proxy::ProxyConnectionFactory,
-    transport::{
-        bo::ClientTransportCreateRequest, http::HttpClientTransport, socks::Socks5ClientTransport,
-    },
+    publish_server_event,
+    transport::{bo::TunnelCreateRequest, http::HttpTunnel, socks::Socks5Tunnel},
     SOCKS_V4, SOCKS_V5,
 };
 
-pub(crate) enum ClientTransport<F>
+pub(crate) enum Tunnel<F>
 where
     F: RsaCryptoFetcher + Send + Sync + 'static,
 {
-    Socks5(Socks5ClientTransport<F>),
-    Http(HttpClientTransport<F>),
+    Socks5(Socks5Tunnel<F>),
+    Http(HttpTunnel<F>),
 }
 
 pub(crate) enum ClientProtocol {
@@ -43,7 +44,7 @@ pub(crate) struct SwitchClientProtocolDecoder;
 impl Decoder for SwitchClientProtocolDecoder {
     type Item = ClientProtocol;
 
-    type Error = AgentError;
+    type Error = AgentServerError;
 
     fn decode(&mut self, src: &mut BytesMut) -> Result<Option<Self::Item>, Self::Error> {
         // Use the first byte to decide what protocol the client side is using.
@@ -59,20 +60,21 @@ impl Decoder for SwitchClientProtocolDecoder {
     }
 }
 
-pub(crate) struct ClientTransportDispatcher<F>
+#[derive(Clone)]
+pub(crate) struct ClientDispatcher<F>
 where
     F: RsaCryptoFetcher + Send + Sync + 'static,
 {
-    config: Arc<AgentConfig>,
+    config: Arc<AgentServerConfig>,
     proxy_connection_factory: Arc<ProxyConnectionFactory<F>>,
 }
 
-impl<F> ClientTransportDispatcher<F>
+impl<F> ClientDispatcher<F>
 where
     F: RsaCryptoFetcher + Send + Sync + 'static,
 {
     pub(crate) fn new(
-        config: Arc<AgentConfig>,
+        config: Arc<AgentServerConfig>,
         proxy_connection_factory: ProxyConnectionFactory<F>,
     ) -> Self {
         Self {
@@ -84,10 +86,11 @@ where
     pub(crate) async fn dispatch(
         &self,
         client_tcp_stream: TcpStream,
-        client_socket_address: SocketAddr,
+        client_socket_address: &PpaassUnifiedAddress,
+        server_event_tx: &Sender<AgentServerEvent>,
         upload_bytes_amount: Arc<AtomicU64>,
         download_bytes_amount: Arc<AtomicU64>,
-    ) -> Result<ClientTransport<F>, AgentError> {
+    ) -> Result<Tunnel<F>, AgentServerError> {
         let mut client_message_framed = Framed::with_capacity(
             client_tcp_stream,
             SwitchClientProtocolDecoder,
@@ -96,20 +99,42 @@ where
         let client_protocol = match client_message_framed.next().await {
             Some(Ok(client_protocol)) => client_protocol,
             Some(Err(e)) => {
-                error!("Fail to read protocol from client io because of error: {e:?}");
+                error!("Fail to create tunnel for client connection [{client_socket_address}] because of error happen when parse client protocol: {e:?}");
+                publish_server_event(
+                    server_event_tx,
+                    AgentServerEvent::TunnelInitializeFail {
+                        client_socket_address: client_socket_address.clone(),
+                        src_address: None,
+                        dst_address: None,
+                        reason: format!(
+                            "Fail to create tunnel for client connection [{client_socket_address}]  because of error happen when parse client protocol."
+                        ),
+                    },
+                )
+                .await;
                 return Err(e);
             }
             None => {
-                error!("Fail to read protocol from client io because of nothing to read.");
-                return Err(AgentError::Other(format!(
-                    "Nothing to read from client: {client_socket_address}"
-                )));
+                error!("Fail to create tunnel for client connection [{client_socket_address}] because of nothing read from client.");
+                publish_server_event(
+                    server_event_tx,
+                    AgentServerEvent::TunnelInitializeFail {
+                        client_socket_address: client_socket_address.clone(),
+                        src_address: None,
+                        dst_address: None,
+                        reason: format!(
+                            "Fail to create tunnel for client connection [{client_socket_address}] because of nothing read from client."
+                        ),
+                    },
+                )
+                .await;
+                return Err(AgentServerError::Other(format!("Fail to create tunnel for client connection [{client_socket_address}] because of nothing read from client.")));
             }
         };
 
-        let create_client_transport_request = ClientTransportCreateRequest {
-            src_address: client_socket_address.into(),
-            client_socket_addr: client_socket_address,
+        let create_tunnel_request = TunnelCreateRequest {
+            src_address: client_socket_address.clone(),
+            client_socket_address: client_socket_address.clone(),
             config: self.config.clone(),
             proxy_connection_factory: self.proxy_connection_factory.clone(),
             upload_bytes_amount,
@@ -124,9 +149,11 @@ where
                     read_buf: initial_buf,
                     ..
                 } = client_message_framed.into_parts();
-                debug!("Client tcp connection [{client_socket_address}] begin to serve socks 5 protocol");
-                Ok(ClientTransport::Socks5(Socks5ClientTransport::new(
-                    create_client_transport_request,
+                debug!(
+                    "Client tcp connection [{client_socket_address}] begin to serve socks 5 protocol"
+                );
+                Ok(Tunnel::Socks5(Socks5Tunnel::new(
+                    create_tunnel_request,
                     client_tcp_stream,
                     initial_buf,
                 )))
@@ -134,8 +161,19 @@ where
 
             ClientProtocol::Socks4 => {
                 // For socks4 protocol
-                error!("Client tcp connection [{client_socket_address}] do not support socks v4 protocol");
-                Err(AgentError::Other(format!("Client tcp connection [{client_socket_address}] do not support socks v4 protocol")))
+                error!("Fail to create tunnel for client connection [{client_socket_address}] because of socks4 not support.");
+                publish_server_event(
+                    server_event_tx,
+                    AgentServerEvent::TunnelInitializeFail {
+                        client_socket_address:client_socket_address.clone(),
+                        src_address: None,
+                        dst_address: None,
+                        reason: format!("Fail to create tunnel for client connection [{client_socket_address}] because of socks4 not support."),
+                    },
+                )
+                .await;
+                Err(AgentServerError::Other(format!("Fail to create tunnel for client connection [{client_socket_address}] because of socks4 not support."
+                )))
             }
             ClientProtocol::Http => {
                 // For http protocol
@@ -147,8 +185,8 @@ where
                 debug!(
                     "Client tcp connection [{client_socket_address}] begin to serve http protocol"
                 );
-                Ok(ClientTransport::Http(HttpClientTransport::new(
-                    create_client_transport_request,
+                Ok(Tunnel::Http(HttpTunnel::new(
+                    create_tunnel_request,
                     client_tcp_stream,
                     initial_buf,
                 )))

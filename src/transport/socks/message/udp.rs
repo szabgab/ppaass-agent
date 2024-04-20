@@ -1,5 +1,5 @@
 use super::Socks5Address;
-use crate::error::AgentError;
+use crate::error::AgentServerError;
 use bytes::{Buf, BufMut, Bytes, BytesMut};
 use std::mem::size_of;
 
@@ -12,24 +12,24 @@ pub(crate) struct Socks5UdpDataPacket {
 }
 
 impl TryFrom<Bytes> for Socks5UdpDataPacket {
-    type Error = AgentError;
+    type Error = AgentServerError;
 
     fn try_from(mut src: Bytes) -> Result<Self, Self::Error> {
         // Check the buffer
         if !src.has_remaining() {
-            return Err(AgentError::Other(
+            return Err(AgentServerError::Other(
                 "No remaining to convert socks5 udp packet".to_string(),
             ));
         }
         // Check and skip the revision
         if src.remaining() < size_of::<u16>() {
-            return Err(AgentError::Other(
+            return Err(AgentServerError::Other(
                 "No remaining to convert socks5 udp packet".to_string(),
             ));
         }
         src.get_u16();
         if src.remaining() < size_of::<u8>() {
-            return Err(AgentError::Other(
+            return Err(AgentServerError::Other(
                 "No remaining to convert socks5 udp packet".to_string(),
             ));
         }

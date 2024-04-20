@@ -1,52 +1,42 @@
-use std::net::SocketAddr;
-
 use ppaass_protocol::message::values::address::PpaassUnifiedAddress;
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub enum AgentServerEvent {
     NetworkState {
-        upload_bytes_amount: u64,
+        upload_mb_amount: f64,
         upload_mb_per_second: f64,
-        download_bytes_amount: u64,
+        download_mb_amount: f64,
         download_mb_per_second: f64,
     },
-    FailToListen(String),
-    SuccessToListen(String),
-    ClientConnectionAcceptSuccess {
-        client_socket_address: SocketAddr,
-        message: String,
+    ServerStartSuccess(u16),
+    ServerStartFail {
+        listening_port: u16,
+        reason: String,
     },
-    ClientConnectionAcceptFail(String),
-    ClientConnectionBeforeRelayFail {
-        client_socket_address: SocketAddr,
-        message: String,
+    ServerStopSuccess(u16),
+    ServerStopFail {
+        listening_port: u16,
+        reason: String,
     },
-    ClientConnectionTransportCreateProxyConnectionFail {
-        client_socket_address: SocketAddr,
-        dst_address: PpaassUnifiedAddress,
-        message: String,
+    TunnelInitializeSuccess {
+        client_socket_address: PpaassUnifiedAddress,
+        src_address: Option<PpaassUnifiedAddress>,
+        dst_address: Option<PpaassUnifiedAddress>,
     },
-    ClientConnectionTransportCreateProxyConnectionSuccess {
-        client_socket_address: SocketAddr,
-        dst_address: PpaassUnifiedAddress,
-        message: String,
+    TunnelInitializeFail {
+        client_socket_address: PpaassUnifiedAddress,
+        src_address: Option<PpaassUnifiedAddress>,
+        dst_address: Option<PpaassUnifiedAddress>,
+        reason: String,
     },
-    ClientConnectionTransportCreateSuccess {
-        client_socket_address: SocketAddr,
-        dst_address: PpaassUnifiedAddress,
-        message: String,
+    TunnelStartRelay {
+        client_socket_address: PpaassUnifiedAddress,
+        src_address: Option<PpaassUnifiedAddress>,
+        dst_address: Option<PpaassUnifiedAddress>,
     },
-    ClientConnectionTransportCreateFail {
-        client_socket_address: SocketAddr,
-        dst_address: PpaassUnifiedAddress,
-        message: String,
-    },
-    ClientConnectionReadProxyConnectionWriteClose {
-        client_socket_address: SocketAddr,
-        message: String,
-    },
-    ClientConnectionWriteProxyConnectionReadClose {
-        client_socket_address: SocketAddr,
-        message: String,
+    TunnelClose {
+        client_socket_address: PpaassUnifiedAddress,
+        src_address: Option<PpaassUnifiedAddress>,
+        dst_address: Option<PpaassUnifiedAddress>,
     },
 }

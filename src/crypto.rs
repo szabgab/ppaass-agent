@@ -1,7 +1,7 @@
 use std::sync::Arc;
 use std::{collections::HashMap, fs::File};
 
-use crate::{config::AgentConfig, error::AgentError};
+use crate::{config::AgentServerConfig, error::AgentServerError};
 
 use ppaass_crypto::crypto::{RsaCrypto, RsaCryptoFetcher};
 use ppaass_crypto::error::CryptoError;
@@ -14,7 +14,7 @@ pub(crate) struct AgentServerRsaCryptoFetcher {
 }
 
 impl AgentServerRsaCryptoFetcher {
-    pub(crate) fn new(config: &AgentConfig) -> Result<Self, AgentError> {
+    pub(crate) fn new(config: &AgentServerConfig) -> Result<Self, AgentServerError> {
         let mut cache = HashMap::new();
         let rsa_dir_path = config.rsa_dir();
         let rsa_dir = std::fs::read_dir(rsa_dir_path)?;

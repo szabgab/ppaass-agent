@@ -4,7 +4,7 @@ use std::io::Error as StdIoError;
 use thiserror::Error;
 
 #[derive(Debug, Error)]
-pub enum AgentError {
+pub enum AgentServerError {
     #[error("Agent error happen because of io: {0:?}")]
     StdIo(#[from] StdIoError),
     #[error(transparent)]

@@ -3,13 +3,10 @@ pub(crate) mod dispatcher;
 mod http;
 mod socks;
 
-use std::{
-    net::SocketAddr,
-    sync::{atomic::AtomicU64, Arc},
-};
+use std::sync::{atomic::AtomicU64, Arc};
 use std::{sync::atomic::Ordering, time::Duration};
 
-use crate::{config::AgentConfig, error::AgentError};
+use crate::{config::AgentServerConfig, error::AgentServerError, publish_server_event};
 
 use bytes::{Bytes, BytesMut};
 use futures_util::stream::{SplitSink, SplitStream};
@@ -33,13 +30,13 @@ use tokio_io_timeout::TimeoutStream;
 use tokio_stream::StreamExt as TokioStreamExt;
 use tokio_util::codec::{BytesCodec, Framed};
 
-struct ClientTransportTcpDataRelay<F>
+struct TunnelTcpDataRelay<F>
 where
     F: RsaCryptoFetcher,
 {
-    transport_id: String,
+    tunnel_id: String,
     client_tcp_stream: TcpStream,
-    client_socket_address: SocketAddr,
+    client_socket_address: PpaassUnifiedAddress,
     src_address: PpaassUnifiedAddress,
     dst_address: PpaassUnifiedAddress,
     proxy_connection_write:
@@ -52,16 +49,16 @@ where
 }
 
 async fn tcp_relay<F>(
-    config: &AgentConfig,
-    tcp_relay_info: ClientTransportTcpDataRelay<F>,
-    signal_tx: Sender<AgentServerEvent>,
-) -> Result<(), AgentError>
+    config: &AgentServerConfig,
+    tcp_relay_info: TunnelTcpDataRelay<F>,
+    server_event_tx: &Sender<AgentServerEvent>,
+) -> Result<(), AgentServerError>
 where
     F: RsaCryptoFetcher + Send + Sync + 'static,
 {
     let user_token = config.user_token().to_string();
-    let ClientTransportTcpDataRelay {
-        transport_id,
+    let TunnelTcpDataRelay {
+        tunnel_id,
         client_tcp_stream,
         client_socket_address,
         src_address,
@@ -76,6 +73,15 @@ where
     debug!(
         "Agent going to relay tcp data from source: {src_address} to destination: {dst_address}"
     );
+    publish_server_event(
+        server_event_tx,
+        AgentServerEvent::TunnelStartRelay {
+            client_socket_address: client_socket_address.clone(),
+            src_address: Some(src_address.clone()),
+            dst_address: Some(dst_address.clone()),
+        },
+    )
+    .await;
     let mut client_tcp_stream = TimeoutStream::new(client_tcp_stream);
     client_tcp_stream.set_read_timeout(Some(Duration::from_secs(
         config.client_connection_read_timeout(),
@@ -100,9 +106,9 @@ where
     }
 
     {
-        let transport_id = transport_id.clone();
+        let tunnel_id = tunnel_id.clone();
         let dst_address = dst_address.clone();
-        let signal_tx = signal_tx.clone();
+        // let server_event_tx = server_event_tx.clone();
 
         tokio::spawn(async move {
             // Forward client data to proxy
@@ -122,24 +128,13 @@ where
             .forward(&mut proxy_connection_write)
             .await
             {
-                error!("Transport [{transport_id}] error happen when relay tcp data from client to proxy for destination [{dst_address}], error: {e:?}");
+                error!("Transport [{tunnel_id}] error happen when relay tcp data from client to proxy for destination [{dst_address}], error: {e:?}");
             }
             if let Err(e) = proxy_connection_write.close().await {
                 error!(
-                    "Transport [{transport_id}] fail to close proxy connection beccause of error: {e:?}"
+                    "Transport [{tunnel_id}] fail to close proxy connection beccause of error: {e:?}"
                 );
             };
-            if let Err(e) = signal_tx
-                .send(AgentServerEvent::ClientConnectionReadProxyConnectionWriteClose{
-                    client_socket_address,
-                    message:format!(
-                        "Client connection read half closed and proxy connection write half closed: {client_socket_address}"
-                    )
-                })
-                .await
-            {
-                error!("Fail to send signal because of error: {e:?}");
-            }
         });
     }
 
@@ -162,24 +157,13 @@ where
         .forward(&mut client_io_write)
         .await
         {
-            error!("Transport [{transport_id}] error happen when relay tcp data from proxy to client for destination [{dst_address}], error: {e:?}",);
+            error!("Transport [{tunnel_id}] error happen when relay tcp data from proxy to client for destination [{dst_address}], error: {e:?}",);
         }
         if let Err(e) = client_io_write.close().await {
             error!(
-                "Transport [{transport_id}] fail to close client connection beccause of error: {e:?}"
+                "Transport [{tunnel_id}] fail to close client connection beccause of error: {e:?}"
             );
         };
-        if let Err(e) = signal_tx
-            .send(AgentServerEvent::ClientConnectionWriteProxyConnectionReadClose{
-                client_socket_address,
-                message:format!(
-                    "Client connection write half closed and proxy connection read half closed: {client_socket_address}"
-                )
-            })
-            .await
-        {
-            error!("Fail to send signal because of error: {e:?}");
-        }
     });
 
     Ok(())

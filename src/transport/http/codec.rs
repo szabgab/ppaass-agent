@@ -7,7 +7,7 @@ use bytecodec::{io::IoDecodeExt, EncodeExt};
 use bytes::{Buf, BufMut, BytesMut};
 use httpcodec::{BodyDecoder, BodyEncoder, Request, RequestDecoder, Response, ResponseEncoder};
 
-use crate::error::AgentError;
+use crate::error::AgentServerError;
 use tokio_util::codec::{Decoder, Encoder};
 use tracing::error;
 
@@ -19,7 +19,7 @@ pub(crate) struct HttpCodec {
 
 impl Decoder for HttpCodec {
     type Item = Request<Vec<u8>>;
-    type Error = AgentError;
+    type Error = AgentServerError;
 
     fn decode(&mut self, src: &mut BytesMut) -> Result<Option<Self::Item>, Self::Error> {
         let decode_result = match self.request_decoder.decode_exact(src.chunk()) {
@@ -28,7 +28,7 @@ impl Decoder for HttpCodec {
                 ErrorKind::IncompleteDecoding => return Ok(None),
                 other_kind => {
                     error!("Http agent fail to decode because of error: {other_kind:?}");
-                    return Err(AgentError::Other(format!(
+                    return Err(AgentServerError::Other(format!(
                         "Http agent fail to decode because of error: {other_kind:?}"
                     )));
                 }
@@ -39,11 +39,11 @@ impl Decoder for HttpCodec {
 }
 
 impl Encoder<Response<Vec<u8>>> for HttpCodec {
-    type Error = AgentError;
+    type Error = AgentServerError;
 
     fn encode(&mut self, item: Response<Vec<u8>>, dst: &mut BytesMut) -> Result<(), Self::Error> {
         let encode_result = self.response_encoder.encode_into_bytes(item).map_err(|e| {
-            AgentError::Other(format!(
+            AgentServerError::Other(format!(
                 "Fail to encode http response because of error: {e:?}"
             ))
         })?;
