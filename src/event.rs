@@ -1,6 +1,7 @@
 use ppaass_protocol::message::values::address::PpaassUnifiedAddress;
+use serde::{Deserialize, Serialize};
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum AgentServerEvent {
     NetworkState {
         upload_mb_amount: f64,
