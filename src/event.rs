@@ -13,7 +13,7 @@ pub enum AgentServerEvent {
         listening_port: u16,
         reason: String,
     },
-    ServerStopSuccess(u16),
+    ServerStopSuccess,
     ServerStopFail {
         listening_port: u16,
         reason: String,

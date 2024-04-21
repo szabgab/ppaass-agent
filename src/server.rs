@@ -17,6 +17,7 @@ use std::{
     time::Duration,
 };
 
+use futures::Future;
 use ppaass_protocol::message::values::address::PpaassUnifiedAddress;
 use tokio::runtime::{Builder, Runtime};
 use tokio::sync::mpsc::{channel, Receiver, Sender};
@@ -31,18 +32,41 @@ use tracing::{debug, error, info};
 const AGENT_SERVER_RUNTIME_NAME: &str = "AGENT-SERVER";
 
 pub struct AgentServerGuard {
-    _join_handle: JoinHandle<()>,
-    runtime: Runtime,
+    join_handle: JoinHandle<()>,
+    runtime: Option<Runtime>,
+    server_event_tx: Sender<AgentServerEvent>,
+    server_event_rx: Receiver<AgentServerEvent>,
 }
 
 impl AgentServerGuard {
-    pub fn blocking(self, signal_rx: Receiver<AgentServerEvent>) {
-        let mut signal_rx = signal_rx;
-        self.runtime.block_on(async {
-            while let Some(signal) = signal_rx.recv().await {
-                println!("Agent server signal: {signal:?}");
-            }
-        });
+    pub fn block<F, Fut>(mut self, callback_on_event: F)
+    where
+        Fut: Future<Output = ()>,
+        F: Fn(AgentServerEvent) -> Fut,
+    {
+        if let Some(ref runtime) = self.runtime {
+            runtime.block_on(async {
+                while let Some(server_event) = self.server_event_rx.recv().await {
+                    callback_on_event(server_event).await;
+                }
+            });
+        }
+    }
+}
+
+impl Drop for AgentServerGuard {
+    fn drop(&mut self) {
+        if !self.join_handle.is_finished() {
+            self.join_handle.abort();
+        }
+        if let Some(runtime) = self.runtime.take() {
+            runtime.block_on(publish_server_event(
+                &self.server_event_tx,
+                AgentServerEvent::ServerStopSuccess,
+            ));
+
+            runtime.shutdown_background();
+        }
     }
 }
 
@@ -182,28 +206,30 @@ impl AgentServer {
         }
     }
 
-    pub fn start(self) -> (AgentServerGuard, Receiver<AgentServerEvent>) {
-        let (server_event_tx, server_event_rs) = channel(1024);
-        let join_handle = self.runtime.spawn(async move {
-            if let Err(e) = Self::run(
-                self.config,
-                self.client_dispatcher,
-                server_event_tx,
-                self.download_bytes_amount,
-                self.upload_bytes_amount,
-            )
-            .await
-            {
-                error!("Fail to start agent server because of error: {e:?}");
-            }
-        });
-        (
-            AgentServerGuard {
-                _join_handle: join_handle,
-                runtime: self.runtime,
-            },
-            server_event_rs,
-        )
+    pub fn start(self) -> AgentServerGuard {
+        let (server_event_tx, server_event_rx) = channel(1024);
+        let join_handle = {
+            let server_event_tx = server_event_tx.clone();
+            self.runtime.spawn(async move {
+                if let Err(e) = Self::run(
+                    self.config,
+                    self.client_dispatcher,
+                    server_event_tx,
+                    self.download_bytes_amount,
+                    self.upload_bytes_amount,
+                )
+                .await
+                {
+                    error!("Fail to start agent server because of error: {e:?}");
+                }
+            })
+        };
+        AgentServerGuard {
+            join_handle,
+            runtime: Some(self.runtime),
+            server_event_tx,
+            server_event_rx,
+        }
     }
 
     fn handle_client_connection(

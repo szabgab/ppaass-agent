@@ -19,6 +19,9 @@ pub async fn publish_server_event(
     server_event_tx: &Sender<AgentServerEvent>,
     event: AgentServerEvent,
 ) {
+    if server_event_tx.is_closed() {
+        return;
+    }
     if let Err(e) = server_event_tx.send(event).await {
         error!("Fail to publish server event because of error: {e:?}");
     }
