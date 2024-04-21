@@ -1,6 +1,6 @@
 use crate::{
-    config::AgentServerConfig, error::AgentServerError, event::AgentServerEvent,
-    publish_server_event,
+    command::AgentServerCommand, config::AgentServerConfig, error::AgentServerError,
+    event::AgentServerEvent, publish_server_event,
 };
 use crate::{
     crypto::AgentServerRsaCryptoFetcher,
@@ -21,7 +21,7 @@ use futures::Future;
 use ppaass_protocol::message::values::address::PpaassUnifiedAddress;
 use tokio::runtime::{Builder, Runtime};
 use tokio::sync::mpsc::{channel, Receiver, Sender};
-use tokio::task::JoinHandle;
+
 use tokio::{
     net::{TcpListener, TcpStream},
     time::interval,
@@ -32,41 +32,30 @@ use tracing::{debug, error, info};
 const AGENT_SERVER_RUNTIME_NAME: &str = "AGENT-SERVER";
 
 pub struct AgentServerGuard {
-    join_handle: JoinHandle<()>,
-    runtime: Option<Runtime>,
-    server_event_tx: Sender<AgentServerEvent>,
+    runtime: Runtime,
+    server_command_tx: Sender<AgentServerCommand>,
     server_event_rx: Receiver<AgentServerEvent>,
 }
 
 impl AgentServerGuard {
-    pub fn block<F, Fut>(mut self, callback_on_event: F)
+    pub fn on_server_event<F, Fut>(&mut self, callback_on_event: F)
     where
         Fut: Future<Output = ()>,
         F: Fn(AgentServerEvent) -> Fut,
     {
-        if let Some(ref runtime) = self.runtime {
-            runtime.block_on(async {
-                while let Some(server_event) = self.server_event_rx.recv().await {
-                    callback_on_event(server_event).await;
-                }
-            });
-        }
+        self.runtime.block_on(async {
+            while let Some(server_event) = self.server_event_rx.recv().await {
+                callback_on_event(server_event).await;
+            }
+        });
     }
-}
 
-impl Drop for AgentServerGuard {
-    fn drop(&mut self) {
-        if !self.join_handle.is_finished() {
-            self.join_handle.abort();
-        }
-        if let Some(runtime) = self.runtime.take() {
-            runtime.block_on(publish_server_event(
-                &self.server_event_tx,
-                AgentServerEvent::ServerStopSuccess,
-            ));
-
-            runtime.shutdown_background();
-        }
+    pub fn send_server_command(&self, command: AgentServerCommand) {
+        self.runtime.block_on(async {
+            if let Err(e) = self.server_command_tx.send(command).await {
+                error!("Fail to send server command because of error: {e:?}")
+            };
+        });
     }
 }
 
@@ -98,6 +87,31 @@ impl AgentServer {
             download_bytes_amount: Default::default(),
         })
     }
+
+    pub fn start(self) -> AgentServerGuard {
+        let (server_event_tx, server_event_rx) = channel(1024);
+        let (server_command_tx, server_command_rx) = channel(1024);
+        self.runtime.spawn(async move {
+            if let Err(e) = Self::run(
+                self.config,
+                self.client_dispatcher,
+                server_command_rx,
+                server_event_tx,
+                self.download_bytes_amount,
+                self.upload_bytes_amount,
+            )
+            .await
+            {
+                error!("Fail to run agent server because of error: {e:?}");
+            }
+        });
+        AgentServerGuard {
+            server_command_tx,
+            server_event_rx,
+            runtime: self.runtime,
+        }
+    }
+
     async fn accept_client_connection(
         tcp_listener: &TcpListener,
     ) -> Result<(TcpStream, SocketAddr), AgentServerError> {
@@ -109,6 +123,7 @@ impl AgentServer {
     async fn run(
         config: Arc<AgentServerConfig>,
         client_dispatcher: ClientDispatcher<AgentServerRsaCryptoFetcher>,
+        mut server_command_rx: Receiver<AgentServerCommand>,
         server_event_tx: Sender<AgentServerEvent>,
         upload_bytes_amount: Arc<AtomicU64>,
         download_bytes_amount: Arc<AtomicU64>,
@@ -186,49 +201,47 @@ impl AgentServer {
         }
 
         loop {
-            match Self::accept_client_connection(&tcp_listener).await {
-                Ok((client_tcp_stream, client_socket_address)) => {
-                    debug!("Accept client tcp connection on address: {client_socket_address}");
-                    Self::handle_client_connection(
-                        client_tcp_stream,
-                        client_socket_address.into(),
-                        client_dispatcher.clone(),
-                        server_event_tx.clone(),
-                        upload_bytes_amount.clone(),
-                        download_bytes_amount.clone(),
-                    );
+            tokio::select! {
+                // Listening to server command
+                server_command = server_command_rx.recv() => {
+                    match server_command {
+                        Some(server_command) => {
+                            match server_command {
+                                AgentServerCommand::Stop => {
+                                    info!("Agent server stopped because of receive stop command.");
+                                    publish_server_event(&server_event_tx, AgentServerEvent::ServerStopSuccess).await;
+                                    return Ok(())
+                                },
+                            }
+                        },
+                        None => {
+                            info!("Agent server stopped because of no command tx.");
+                            publish_server_event(&server_event_tx, AgentServerEvent::ServerStopSuccess).await;
+                            return Ok(())
+                        },
+                    }
                 }
-                Err(e) => {
-                    error!("Agent server fail to accept client connection because of error: {e:?}");
-                    continue;
+                // Accepting client connection
+                client_accept_result = Self::accept_client_connection(&tcp_listener) => {
+                    match client_accept_result{
+                        Ok((client_tcp_stream, client_socket_address)) => {
+                            debug!("Accept client tcp connection on address: {client_socket_address}");
+                            Self::handle_client_connection(
+                                client_tcp_stream,
+                                client_socket_address.into(),
+                                client_dispatcher.clone(),
+                                server_event_tx.clone(),
+                                upload_bytes_amount.clone(),
+                                download_bytes_amount.clone(),
+                            );
+                        }
+                        Err(e) => {
+                            error!("Agent server fail to accept client connection because of error: {e:?}");
+                            continue;
+                        }
+                    }
                 }
             }
-        }
-    }
-
-    pub fn start(self) -> AgentServerGuard {
-        let (server_event_tx, server_event_rx) = channel(1024);
-        let join_handle = {
-            let server_event_tx = server_event_tx.clone();
-            self.runtime.spawn(async move {
-                if let Err(e) = Self::run(
-                    self.config,
-                    self.client_dispatcher,
-                    server_event_tx,
-                    self.download_bytes_amount,
-                    self.upload_bytes_amount,
-                )
-                .await
-                {
-                    error!("Fail to start agent server because of error: {e:?}");
-                }
-            })
-        };
-        AgentServerGuard {
-            join_handle,
-            runtime: Some(self.runtime),
-            server_event_tx,
-            server_event_rx,
         }
     }
 
