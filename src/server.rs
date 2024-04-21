@@ -17,7 +17,6 @@ use std::{
     time::Duration,
 };
 
-use futures::Future;
 use ppaass_protocol::message::values::address::PpaassUnifiedAddress;
 use tokio::runtime::{Builder, Runtime};
 use tokio::sync::mpsc::{channel, Receiver, Sender};
@@ -32,30 +31,19 @@ use tracing::{debug, error, info};
 const AGENT_SERVER_RUNTIME_NAME: &str = "AGENT-SERVER";
 
 pub struct AgentServerGuard {
-    runtime: Runtime,
+    _runtime: Runtime,
     server_command_tx: Sender<AgentServerCommand>,
-    server_event_rx: Receiver<AgentServerEvent>,
 }
 
 impl AgentServerGuard {
-    pub fn on_server_event<F, Fut>(&mut self, callback_on_event: F)
-    where
-        Fut: Future<Output = ()>,
-        F: Fn(AgentServerEvent) -> Fut,
-    {
-        self.runtime.block_on(async {
-            while let Some(server_event) = self.server_event_rx.recv().await {
-                callback_on_event(server_event).await;
-            }
-        });
-    }
-
-    pub fn send_server_command(&self, command: AgentServerCommand) {
-        self.runtime.block_on(async {
-            if let Err(e) = self.server_command_tx.send(command).await {
-                error!("Fail to send server command because of error: {e:?}")
-            };
-        });
+    pub async fn send_server_command(
+        &self,
+        command: AgentServerCommand,
+    ) -> Result<(), AgentServerError> {
+        if let Err(e) = self.server_command_tx.send(command).await {
+            error!("Fail to send server command because of error: {e:?}")
+        };
+        Ok(())
     }
 }
 
@@ -88,7 +76,7 @@ impl AgentServer {
         })
     }
 
-    pub fn start(self) -> AgentServerGuard {
+    pub fn start(self) -> (AgentServerGuard, Receiver<AgentServerEvent>) {
         let (server_event_tx, server_event_rx) = channel(1024);
         let (server_command_tx, server_command_rx) = channel(1024);
         self.runtime.spawn(async move {
@@ -105,11 +93,13 @@ impl AgentServer {
                 error!("Fail to run agent server because of error: {e:?}");
             }
         });
-        AgentServerGuard {
-            server_command_tx,
+        (
+            AgentServerGuard {
+                server_command_tx,
+                _runtime: self.runtime,
+            },
             server_event_rx,
-            runtime: self.runtime,
-        }
+        )
     }
 
     async fn accept_client_connection(
