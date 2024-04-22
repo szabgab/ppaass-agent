@@ -6,7 +6,7 @@ mod codec;
 pub mod command;
 pub mod config;
 mod crypto;
-pub mod error;
+mod error;
 pub mod event;
 pub mod log;
 mod proxy;

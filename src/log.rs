@@ -1,5 +1,5 @@
-use std::path::Path;
 use std::str::FromStr;
+use std::{path::Path, sync::Arc};
 
 use crate::config::AgentServerConfig;
 use tracing::level_filters::LevelFilter;
@@ -12,7 +12,7 @@ const TRACE_FILE_DIR_PATH: &str = "log";
 
 const LOG_FILE_NAME_PREFIX: &str = "ppaass-agent";
 
-pub fn init_log(config: &AgentServerConfig) -> Result<WorkerGuard, AgentServerError> {
+pub fn init_log(config: Arc<AgentServerConfig>) -> Result<WorkerGuard, AgentServerError> {
     let (trace_file_appender, trace_appender_guard) = tracing_appender::non_blocking(
         tracing_appender::rolling::daily(Path::new(TRACE_FILE_DIR_PATH), LOG_FILE_NAME_PREFIX),
     );
