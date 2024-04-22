@@ -1,8 +1,9 @@
 use std::path::PathBuf;
 
 use clap::{command, Parser};
+use serde::{Deserialize, Serialize};
 
-#[derive(Parser)]
+#[derive(Parser, Clone, Debug, Serialize, Deserialize)]
 #[command(
     version,
     about,
