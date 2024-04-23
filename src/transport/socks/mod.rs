@@ -1,8 +1,11 @@
 mod codec;
 mod message;
 
-use std::net::{SocketAddr, ToSocketAddrs};
 use std::sync::{atomic::AtomicU64, Arc};
+use std::{
+    net::{SocketAddr, ToSocketAddrs},
+    sync::atomic::AtomicBool,
+};
 
 use bytes::{Bytes, BytesMut};
 
@@ -62,6 +65,7 @@ where
     pub socks5_init_framed: Framed<TcpStream, Socks5InitCommandContentCodec>,
     pub upload_bytes_amount: Arc<AtomicU64>,
     pub download_bytes_amount: Arc<AtomicU64>,
+    pub stoped_status: Arc<AtomicBool>,
 }
 
 pub(crate) struct Socks5Tunnel<F>
@@ -102,6 +106,7 @@ where
     pub(crate) async fn process(
         self,
         server_event_tx: &Sender<AgentServerEvent>,
+        stoped_status: Arc<AtomicBool>,
     ) -> Result<(), AgentServerError> {
         let initial_buf = self.initial_buf;
         let src_address = self.src_address;
@@ -228,6 +233,7 @@ where
                         socks5_init_framed,
                         upload_bytes_amount: self.upload_bytes_amount,
                         download_bytes_amount: self.download_bytes_amount,
+                        stoped_status,
                     },
                     server_event_tx,
                 )
@@ -389,6 +395,7 @@ where
             mut socks5_init_framed,
             upload_bytes_amount,
             download_bytes_amount,
+            stoped_status,
         } = request;
         match &dst_address {
             PpaassUnifiedAddress::Ip(socket_addr) => {
@@ -587,6 +594,7 @@ where
                 payload_encryption,
                 upload_bytes_amount,
                 download_bytes_amount,
+                stoped_status,
             },
             server_event_tx,
         )

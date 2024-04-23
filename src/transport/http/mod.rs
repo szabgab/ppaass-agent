@@ -1,7 +1,10 @@
 pub(crate) mod codec;
 
 use bytecodec::{bytes::BytesEncoder, EncodeExt};
-use std::sync::{atomic::AtomicU64, Arc};
+use std::sync::{
+    atomic::{AtomicBool, AtomicU64},
+    Arc,
+};
 
 use bytes::{Bytes, BytesMut};
 
@@ -79,6 +82,7 @@ where
     pub(crate) async fn process(
         self,
         server_event_tx: &Sender<AgentServerEvent>,
+        stoped_status: Arc<AtomicBool>,
     ) -> Result<(), AgentServerError> {
         let upload_bytes_amount = self.upload_bytes_amount;
         let download_bytes_amount = self.download_bytes_amount;
@@ -295,6 +299,7 @@ where
                 payload_encryption,
                 upload_bytes_amount,
                 download_bytes_amount,
+                stoped_status,
             },
             server_event_tx,
         )

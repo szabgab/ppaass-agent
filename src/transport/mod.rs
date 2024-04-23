@@ -3,7 +3,10 @@ pub(crate) mod dispatcher;
 mod http;
 mod socks;
 
-use std::sync::{atomic::AtomicU64, Arc};
+use std::sync::{
+    atomic::{AtomicBool, AtomicU64},
+    Arc,
+};
 use std::{sync::atomic::Ordering, time::Duration};
 
 use crate::{config::AgentServerConfig, error::AgentServerError, publish_server_event};
@@ -46,6 +49,7 @@ where
     payload_encryption: PpaassMessagePayloadEncryption,
     upload_bytes_amount: Arc<AtomicU64>,
     download_bytes_amount: Arc<AtomicU64>,
+    stoped_status: Arc<AtomicBool>,
 }
 
 async fn tcp_relay<F>(
@@ -69,6 +73,7 @@ where
         payload_encryption,
         upload_bytes_amount,
         download_bytes_amount,
+        stoped_status,
     } = tcp_relay_info;
     debug!(
         "Agent going to relay tcp data from source: {src_address} to destination: {dst_address}"
@@ -108,12 +113,16 @@ where
     {
         let tunnel_id = tunnel_id.clone();
         let dst_address = dst_address.clone();
+        let stoped_status = stoped_status.clone();
         // let server_event_tx = server_event_tx.clone();
 
         tokio::spawn(async move {
             // Forward client data to proxy
             let client_io_read = TokioStreamExt::fuse(client_io_read);
             if let Err(e) = TokioStreamExt::map_while(client_io_read, |client_message| {
+                if stoped_status.load(Ordering::Relaxed) {
+                    return None;
+                }
                 let client_message = client_message.ok()?;
                 let message_size = client_message.len() as u64;
                 let tcp_data = PpaassMessageGenerator::generate_agent_tcp_data_message(
@@ -141,6 +150,9 @@ where
     tokio::spawn(async move {
         let proxy_connection_read = TokioStreamExt::fuse(proxy_connection_read);
         if let Err(e) = TokioStreamExt::map_while(proxy_connection_read, |proxy_message| {
+            if stoped_status.load(Ordering::Relaxed) {
+                return None;
+            }
             let proxy_message = proxy_message.ok()?;
             let PpaassProxyMessage {
                 payload: PpaassProxyMessagePayload::Tcp(ProxyTcpPayload::Data { content }),

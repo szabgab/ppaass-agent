@@ -8,7 +8,10 @@ use crate::{
     transport::dispatcher::{ClientDispatcher, Tunnel},
 };
 
-use std::net::SocketAddr;
+use std::{
+    net::SocketAddr,
+    sync::atomic::{AtomicBool, Ordering},
+};
 use std::{
     sync::{
         atomic::{AtomicU64, Ordering::Relaxed},
@@ -52,6 +55,7 @@ impl AgentServer {
         let client_dispatcher = self.client_dispatcher;
         let upload_bytes_amount: Arc<AtomicU64> = Default::default();
         let download_bytes_amount: Arc<AtomicU64> = Default::default();
+        let stoped_status: Arc<AtomicBool> = Default::default();
         tokio::spawn(async move {
             let agent_server_bind_addr = if config.ipv6() {
                 format!("::1:{}", config.port())
@@ -77,6 +81,7 @@ impl AgentServer {
                     return;
                 }
             };
+
             publish_server_event(
                 &server_event_tx,
                 AgentServerEvent::ServerStartSuccess(config.port()),
@@ -103,6 +108,7 @@ impl AgentServer {
                                 match server_command {
                                     AgentServerCommand::Stop => {
                                         info!("Agent server stopped because of receive stop command.");
+                                        stoped_status.swap(true, Ordering::Relaxed);
                                         publish_server_event(&server_event_tx, AgentServerEvent::ServerStopSuccess).await;
                                         return;
                                     },
@@ -156,6 +162,7 @@ impl AgentServer {
                                     server_event_tx.clone(),
                                     upload_bytes_amount.clone(),
                                     download_bytes_amount.clone(),
+                                    stoped_status.clone()
                                 );
                             }
                             Err(e) => {
@@ -185,6 +192,7 @@ impl AgentServer {
         server_event_tx: Sender<AgentServerEvent>,
         upload_bytes_amount: Arc<AtomicU64>,
         download_bytes_amount: Arc<AtomicU64>,
+        stoped_status: Arc<AtomicBool>,
     ) {
         tokio::spawn(async move {
             let tunnel = match client_dispatcher
@@ -206,12 +214,15 @@ impl AgentServer {
 
             match tunnel {
                 Tunnel::Socks5(socks5_tunnel) => {
-                    if let Err(e) = socks5_tunnel.process(&server_event_tx).await {
+                    if let Err(e) = socks5_tunnel.process(&server_event_tx, stoped_status).await {
                         error!("Fail to process socks5 tunnel for client connection [{client_socket_address}] because of error: {e:?}");
                     }
                 }
                 Tunnel::Http(http_transport) => {
-                    if let Err(e) = http_transport.process(&server_event_tx).await {
+                    if let Err(e) = http_transport
+                        .process(&server_event_tx, stoped_status)
+                        .await
+                    {
                         error!("Fail to process http tunnel for client connection [{client_socket_address}] because of error: {e:?}");
                     }
                 }
