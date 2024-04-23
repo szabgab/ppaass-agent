@@ -83,22 +83,40 @@ impl AgentServer {
             )
             .await;
 
-            {
-                // Start the network state event task
-                let upload_bytes_amount = upload_bytes_amount.clone();
-                let download_bytes_amount = download_bytes_amount.clone();
-                let server_event_tx = server_event_tx.clone();
-                let server_event_tick_interval_val = config.server_signal_tick_interval();
-                tokio::spawn(async move {
-                    let mut server_event_tick_interval =
-                        interval(Duration::from_secs(server_event_tick_interval_val));
-                    let mb_per_second_div_base =
-                        (server_event_tick_interval_val * 1024 * 1024) as f64;
-                    loop {
-                        let upload_bytes_amount_pre_val = upload_bytes_amount.fetch_add(0, Relaxed);
-                        let download_bytes_amount_pre_val =
-                            download_bytes_amount.fetch_add(0, Relaxed);
-                        server_event_tick_interval.tick().await;
+            // Start the network state event task
+            let upload_bytes_amount = upload_bytes_amount.clone();
+            let download_bytes_amount = download_bytes_amount.clone();
+            let server_event_tx = server_event_tx.clone();
+            let server_event_tick_interval_val = config.server_signal_tick_interval();
+            let mb_per_second_div_base = (server_event_tick_interval_val * 1024 * 1024) as f64;
+            let mut server_event_tick_interval =
+                interval(Duration::from_secs(server_event_tick_interval_val));
+
+            loop {
+                let upload_bytes_amount_pre_val = upload_bytes_amount.fetch_add(0, Relaxed);
+                let download_bytes_amount_pre_val = download_bytes_amount.fetch_add(0, Relaxed);
+                tokio::select! {
+                    // Listening to server command
+                    server_command = server_command_rx.recv() => {
+                        match server_command {
+                            Some(server_command) => {
+                                match server_command {
+                                    AgentServerCommand::Stop => {
+                                        info!("Agent server stopped because of receive stop command.");
+                                        publish_server_event(&server_event_tx, AgentServerEvent::ServerStopSuccess).await;
+                                        return;
+                                    },
+                                }
+                            },
+                            None => {
+                                info!("Agent server stopped because of no command tx.");
+                                publish_server_event(&server_event_tx, AgentServerEvent::ServerStopSuccess).await;
+                                return;
+                            },
+                        }
+                    }
+                    // Send netowrk
+                    _ = server_event_tick_interval.tick() => {
                         let upload_bytes_amount_current_val =
                             upload_bytes_amount.fetch_add(0, Relaxed);
                         let download_bytes_amount_current_val =
@@ -125,30 +143,6 @@ impl AgentServer {
                             },
                         )
                         .await;
-                    }
-                });
-            }
-
-            loop {
-                tokio::select! {
-                    // Listening to server command
-                    server_command = server_command_rx.recv() => {
-                        match server_command {
-                            Some(server_command) => {
-                                match server_command {
-                                    AgentServerCommand::Stop => {
-                                        info!("Agent server stopped because of receive stop command.");
-                                        publish_server_event(&server_event_tx, AgentServerEvent::ServerStopSuccess).await;
-                                        return;
-                                    },
-                                }
-                            },
-                            None => {
-                                info!("Agent server stopped because of no command tx.");
-                                publish_server_event(&server_event_tx, AgentServerEvent::ServerStopSuccess).await;
-                                return;
-                            },
-                        }
                     }
                     // Accepting client connection
                     client_accept_result = Self::accept_client_connection(&tcp_listener) => {
