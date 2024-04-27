@@ -24,15 +24,17 @@ impl Decoder for HttpCodec {
     fn decode(&mut self, src: &mut BytesMut) -> Result<Option<Self::Item>, Self::Error> {
         let decode_result = match self.request_decoder.decode_exact(src.chunk()) {
             Ok(decode_result) => decode_result,
-            Err(e) => match e.kind() {
-                ErrorKind::IncompleteDecoding => return Ok(None),
-                other_kind => {
-                    error!("Http agent fail to decode because of error: {other_kind:?}");
-                    return Err(AgentServerError::Other(format!(
-                        "Http agent fail to decode because of error: {other_kind:?}"
-                    )));
+            Err(e) => {
+                return match e.kind() {
+                    ErrorKind::IncompleteDecoding => Ok(None),
+                    other_kind => {
+                        error!("Http agent fail to decode because of error: {other_kind:?}");
+                        Err(AgentServerError::Other(format!(
+                            "Http agent fail to decode because of error: {other_kind:?}"
+                        )))
+                    }
                 }
-            },
+            }
         };
         Ok(Some(decode_result))
     }

@@ -49,7 +49,7 @@ where
     payload_encryption: PpaassMessagePayloadEncryption,
     upload_bytes_amount: Arc<AtomicU64>,
     download_bytes_amount: Arc<AtomicU64>,
-    stoped_status: Arc<AtomicBool>,
+    stopped_status: Arc<AtomicBool>,
 }
 
 async fn tcp_relay<F>(
@@ -73,7 +73,7 @@ where
         payload_encryption,
         upload_bytes_amount,
         download_bytes_amount,
-        stoped_status,
+        stopped_status,
     } = tcp_relay_info;
     debug!(
         "Agent going to relay tcp data from source: {src_address} to destination: {dst_address}"
@@ -113,14 +113,12 @@ where
     {
         let tunnel_id = tunnel_id.clone();
         let dst_address = dst_address.clone();
-        let stoped_status = stoped_status.clone();
-        // let server_event_tx = server_event_tx.clone();
-
+        let stopped_status = stopped_status.clone();
         tokio::spawn(async move {
             // Forward client data to proxy
             let client_io_read = TokioStreamExt::fuse(client_io_read);
             if let Err(e) = TokioStreamExt::map_while(client_io_read, |client_message| {
-                if stoped_status.load(Ordering::Relaxed) {
+                if stopped_status.load(Ordering::Relaxed) {
                     return None;
                 }
                 let client_message = client_message.ok()?;
@@ -141,7 +139,7 @@ where
             }
             if let Err(e) = proxy_connection_write.close().await {
                 error!(
-                    "Transport [{tunnel_id}] fail to close proxy connection beccause of error: {e:?}"
+                    "Transport [{tunnel_id}] fail to close proxy connection because of error: {e:?}"
                 );
             };
         });
@@ -150,7 +148,7 @@ where
     tokio::spawn(async move {
         let proxy_connection_read = TokioStreamExt::fuse(proxy_connection_read);
         if let Err(e) = TokioStreamExt::map_while(proxy_connection_read, |proxy_message| {
-            if stoped_status.load(Ordering::Relaxed) {
+            if stopped_status.load(Ordering::Relaxed) {
                 return None;
             }
             let proxy_message = proxy_message.ok()?;

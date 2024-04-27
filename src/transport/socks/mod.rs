@@ -65,7 +65,7 @@ where
     pub socks5_init_framed: Framed<TcpStream, Socks5InitCommandContentCodec>,
     pub upload_bytes_amount: Arc<AtomicU64>,
     pub download_bytes_amount: Arc<AtomicU64>,
-    pub stoped_status: Arc<AtomicBool>,
+    pub stopped_status: Arc<AtomicBool>,
 }
 
 pub(crate) struct Socks5Tunnel<F>
@@ -106,7 +106,7 @@ where
     pub(crate) async fn process(
         self,
         server_event_tx: &Sender<AgentServerEvent>,
-        stoped_status: Arc<AtomicBool>,
+        stopped_status: Arc<AtomicBool>,
     ) -> Result<(), AgentServerError> {
         let initial_buf = self.initial_buf;
         let src_address = self.src_address;
@@ -233,7 +233,7 @@ where
                         socks5_init_framed,
                         upload_bytes_amount: self.upload_bytes_amount,
                         download_bytes_amount: self.download_bytes_amount,
-                        stoped_status,
+                        stopped_status,
                     },
                     server_event_tx,
                 )
@@ -395,7 +395,7 @@ where
             mut socks5_init_framed,
             upload_bytes_amount,
             download_bytes_amount,
-            stoped_status,
+            stopped_status,
         } = request;
         match &dst_address {
             PpaassUnifiedAddress::Ip(socket_addr) => {
@@ -421,7 +421,7 @@ where
                     if ipv4_addr.ip().is_broadcast() {
                         publish_server_event(server_event_tx, AgentServerEvent::TunnelInitializeFail { client_socket_address:client_socket_address.clone(), src_address: Some(src_address.clone()), dst_address: Some(dst_address.clone()), reason: format!("Client connection [{client_socket_address}] initialize socks5 tunnel from [{src_address}] to [{dst_address}] fail because of destination address is broadcast.") }).await;
                         return Err(AgentServerError::Other(format!(
-                            "Broadcase address is not allowed: {socket_addr}"
+                            "Broadcast address is not allowed: {socket_addr}"
                         )));
                     }
                     if ipv4_addr.ip().is_private() {
@@ -594,7 +594,7 @@ where
                 payload_encryption,
                 upload_bytes_amount,
                 download_bytes_amount,
-                stoped_status,
+                stopped_status,
             },
             server_event_tx,
         )

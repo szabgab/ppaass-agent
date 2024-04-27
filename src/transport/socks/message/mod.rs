@@ -2,6 +2,7 @@ mod auth;
 mod init;
 mod udp;
 
+use std::fmt::Display;
 use std::{
     fmt::Debug,
     net::{Ipv4Addr, Ipv6Addr, SocketAddr, SocketAddrV4, SocketAddrV6, ToSocketAddrs},
@@ -135,16 +136,17 @@ impl From<SocketAddr> for Socks5Address {
     }
 }
 
-impl ToString for Socks5Address {
-    fn to_string(&self) -> String {
-        match self {
+impl Display for Socks5Address {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let str = match self {
             Self::Ip(socket_addr) => {
                 format!("{socket_addr}")
             }
             Self::Domain(host, port) => {
                 format!("{host}:{port}")
             }
-        }
+        };
+        write!(f, "{}", str)
     }
 }
 
