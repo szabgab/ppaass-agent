@@ -1,7 +1,7 @@
 [package]
 edition = "2021"
 name = "ppaass-agent"
-version = "0.1.31"
+version = "0.1.32"
 license = "MIT"
 description = "The agent part of the ppaass application"
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
@@ -47,4 +47,4 @@ tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["chrono", "json"] }
 tracing-appender = "0.2"
 clap = { version = "4.5", features = ["derive"] }
-anyhow="1"
+anyhow = "1"
