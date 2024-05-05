@@ -302,7 +302,6 @@ where
                 client_udp_restrict_address.clone(),
                 dst_address.clone(),
                 client_to_dst_socks5_udp_packet.data,
-                true,
             )?;
             let proxy_connection = proxy_connection_factory.create_proxy_connection().await?;
             let (mut proxy_connection_write, mut proxy_connection_read) = proxy_connection.split();
