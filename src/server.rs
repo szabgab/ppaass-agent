@@ -5,7 +5,7 @@ use crate::{
 use crate::{
     crypto::AgentServerRsaCryptoFetcher,
     proxy::ProxyConnectionFactory,
-    transport::dispatcher::{ClientDispatcher, Tunnel},
+    tunnel::dispatcher::{ClientDispatcher, Tunnel},
 };
 
 use std::{net::SocketAddr, sync::atomic::AtomicBool};
@@ -26,7 +26,12 @@ use tokio::{
     time::interval,
 };
 
+use tokio_io_timeout::TimeoutStream;
 use tracing::{debug, error, info};
+
+const AGENT_SEVER_EVENT_CHANNEL_BUF: usize = 1024;
+const AGENT_SEVER_COMMAND_CHANNEL_BUF: usize = 1024;
+const ONE_MB: u64 = 1024 * 1024;
 
 pub struct AgentServer {
     config: Arc<AgentServerConfig>,
@@ -46,8 +51,8 @@ impl AgentServer {
     }
 
     pub fn start(self) -> (Sender<AgentServerCommand>, Receiver<AgentServerEvent>) {
-        let (server_event_tx, server_event_rx) = channel(1024);
-        let (server_command_tx, mut server_command_rx) = channel(1024);
+        let (server_event_tx, server_event_rx) = channel(AGENT_SEVER_EVENT_CHANNEL_BUF);
+        let (server_command_tx, mut server_command_rx) = channel(AGENT_SEVER_COMMAND_CHANNEL_BUF);
         let config = self.config;
         let client_dispatcher = self.client_dispatcher;
         let upload_bytes_amount: Arc<AtomicU64> = Default::default();
@@ -90,7 +95,7 @@ impl AgentServer {
             let download_bytes_amount = download_bytes_amount.clone();
             let server_event_tx = server_event_tx.clone();
             let server_event_tick_interval_val = config.server_signal_tick_interval();
-            let mb_per_second_div_base = (server_event_tick_interval_val * 1024 * 1024) as f64;
+            let mb_per_second_div_base = (server_event_tick_interval_val * ONE_MB) as f64;
             let mut server_event_tick_interval =
                 interval(Duration::from_secs(server_event_tick_interval_val));
 
@@ -138,17 +143,17 @@ impl AgentServer {
                             &server_event_tx,
                             AgentServerEvent::NetworkState {
                                 upload_mb_amount: upload_bytes_amount_current_val as f64
-                                    / (1024 * 1024) as f64,
+                                    / ONE_MB as f64,
                                 upload_mb_per_second,
                                 download_mb_amount: download_bytes_amount_current_val as f64
-                                    / (1024 * 1024) as f64,
+                                    / ONE_MB as f64,
                                 download_mb_per_second,
                             },
                         )
                         .await;
                     }
                     // Accepting client connection
-                    client_accept_result = Self::accept_client_connection(&tcp_listener) => {
+                    client_accept_result = Self::accept_client_connection(&config, &tcp_listener) => {
                         match client_accept_result{
                             Ok((client_tcp_stream, client_socket_address)) => {
                                 debug!("Accept client tcp connection on address: {client_socket_address}");
@@ -175,15 +180,23 @@ impl AgentServer {
     }
 
     async fn accept_client_connection(
+        config: &AgentServerConfig,
         tcp_listener: &TcpListener,
-    ) -> Result<(TcpStream, SocketAddr), AgentServerError> {
+    ) -> Result<(TimeoutStream<TcpStream>, SocketAddr), AgentServerError> {
         let (client_tcp_stream, client_socket_address) = tcp_listener.accept().await?;
         client_tcp_stream.set_nodelay(true)?;
+        let mut client_tcp_stream = TimeoutStream::new(client_tcp_stream);
+        client_tcp_stream.set_read_timeout(Some(Duration::from_secs(
+            config.client_connection_read_timeout(),
+        )));
+        client_tcp_stream.set_write_timeout(Some(Duration::from_secs(
+            config.client_connection_write_timeout(),
+        )));
         Ok((client_tcp_stream, client_socket_address))
     }
 
     fn handle_client_connection(
-        client_tcp_stream: TcpStream,
+        client_tcp_stream: TimeoutStream<TcpStream>,
         client_socket_address: PpaassUnifiedAddress,
         client_dispatcher: ClientDispatcher<AgentServerRsaCryptoFetcher>,
         server_event_tx: Sender<AgentServerEvent>,
@@ -204,25 +217,19 @@ impl AgentServer {
             {
                 Ok(tunnel) => tunnel,
                 Err(e) => {
-                    error!("Fail to dispatch client connection [{client_socket_address}] to transport because of error: {e:?}");
+                    error!("Fail to dispatch client connection [{client_socket_address}] to tunnel because of error: {e:?}");
                     return;
                 }
             };
 
             match tunnel {
-                Tunnel::Socks5(socks5_tunnel) => {
-                    if let Err(e) = socks5_tunnel
-                        .process(&server_event_tx, stopped_status)
-                        .await
-                    {
+                Tunnel::Socks5(tunnel) => {
+                    if let Err(e) = tunnel.process(&server_event_tx, stopped_status).await {
                         error!("Fail to process socks5 tunnel for client connection [{client_socket_address}] because of error: {e:?}");
                     }
                 }
-                Tunnel::Http(http_transport) => {
-                    if let Err(e) = http_transport
-                        .process(&server_event_tx, stopped_status)
-                        .await
-                    {
+                Tunnel::Http(tunnel) => {
+                    if let Err(e) = tunnel.process(&server_event_tx, stopped_status).await {
                         error!("Fail to process http tunnel for client connection [{client_socket_address}] because of error: {e:?}");
                     }
                 }

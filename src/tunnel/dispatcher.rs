@@ -6,6 +6,7 @@ use futures_util::StreamExt;
 
 use ppaass_crypto::crypto::RsaCryptoFetcher;
 use ppaass_protocol::message::values::address::PpaassUnifiedAddress;
+use tokio_io_timeout::TimeoutStream;
 use tracing::{debug, error};
 
 use tokio::{net::TcpStream, sync::mpsc::Sender};
@@ -18,7 +19,7 @@ use crate::{
     event::AgentServerEvent,
     proxy::ProxyConnectionFactory,
     publish_server_event,
-    transport::{bo::TunnelCreateRequest, http::HttpTunnel, socks::Socks5Tunnel},
+    tunnel::{bo::TunnelCreateRequest, http::HttpTunnel, socks::Socks5Tunnel},
     SOCKS_V4, SOCKS_V5,
 };
 
@@ -85,14 +86,14 @@ where
 
     pub(crate) async fn dispatch(
         &self,
-        client_tcp_stream: TcpStream,
+        client_tcp_stream: TimeoutStream<TcpStream>,
         client_socket_address: &PpaassUnifiedAddress,
         server_event_tx: &Sender<AgentServerEvent>,
         upload_bytes_amount: Arc<AtomicU64>,
         download_bytes_amount: Arc<AtomicU64>,
     ) -> Result<Tunnel<F>, AgentServerError> {
         let mut client_message_framed = Framed::with_capacity(
-            client_tcp_stream,
+            Box::pin(client_tcp_stream),
             SwitchClientProtocolDecoder,
             self.config.client_receive_buffer_size(),
         );

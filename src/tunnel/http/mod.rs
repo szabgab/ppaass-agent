@@ -1,10 +1,11 @@
 pub(crate) mod codec;
-
 use bytecodec::{bytes::BytesEncoder, EncodeExt};
+use std::pin::Pin;
 use std::sync::{
     atomic::{AtomicBool, AtomicU64},
     Arc,
 };
+use tokio_io_timeout::TimeoutStream;
 
 use bytes::{Bytes, BytesMut};
 
@@ -31,7 +32,7 @@ use crate::{
 use crate::event::AgentServerEvent;
 use crate::{
     error::AgentServerError,
-    transport::{http::codec::HttpCodec, TunnelTcpDataRelay},
+    tunnel::{http::codec::HttpCodec, TunnelTcpDataRelay},
 };
 
 use super::{bo::TunnelCreateRequest, tcp_relay};
@@ -48,7 +49,7 @@ pub(crate) struct HttpTunnel<F>
 where
     F: RsaCryptoFetcher + Send + Sync + 'static,
 {
-    client_tcp_stream: TcpStream,
+    client_tcp_stream: Pin<Box<TimeoutStream<TcpStream>>>,
     src_address: PpaassUnifiedAddress,
     initial_buf: BytesMut,
     client_socket_address: PpaassUnifiedAddress,
@@ -64,7 +65,7 @@ where
 {
     pub(crate) fn new(
         request: TunnelCreateRequest<F>,
-        client_tcp_stream: TcpStream,
+        client_tcp_stream: Pin<Box<TimeoutStream<TcpStream>>>,
         initial_buf: BytesMut,
     ) -> Self {
         Self {
@@ -284,7 +285,6 @@ where
             },
         )
         .await;
-
         tcp_relay(
             &self.config,
             TunnelTcpDataRelay {

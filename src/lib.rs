@@ -11,7 +11,7 @@ pub mod event;
 pub mod log;
 mod proxy;
 pub mod server;
-mod transport;
+mod tunnel;
 
 pub const SOCKS_V5: u8 = 5;
 pub const SOCKS_V4: u8 = 4;

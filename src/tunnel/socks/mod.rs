@@ -1,6 +1,7 @@
 mod codec;
 mod message;
 
+use std::pin::Pin;
 use std::sync::{atomic::AtomicU64, Arc};
 use std::{
     net::{SocketAddr, ToSocketAddrs},
@@ -19,6 +20,7 @@ use ppaass_protocol::message::values::address::PpaassUnifiedAddress;
 use ppaass_protocol::message::values::encryption::PpaassMessagePayloadEncryptionSelector;
 use ppaass_protocol::message::{PpaassProxyMessage, PpaassProxyMessagePayload};
 
+use tokio_io_timeout::TimeoutStream;
 use tracing::{debug, error, info};
 
 use tokio::sync::mpsc::Sender;
@@ -39,7 +41,7 @@ use crate::{
 use crate::event::AgentServerEvent;
 use crate::{
     error::AgentServerError,
-    transport::{
+    tunnel::{
         socks::{
             codec::{Socks5AuthCommandContentCodec, Socks5InitCommandContentCodec},
             message::{
@@ -62,7 +64,8 @@ where
     pub src_address: PpaassUnifiedAddress,
     pub dst_address: PpaassUnifiedAddress,
     pub client_socket_address: PpaassUnifiedAddress,
-    pub socks5_init_framed: Framed<TcpStream, Socks5InitCommandContentCodec>,
+    pub socks5_init_framed:
+        Framed<Pin<Box<TimeoutStream<TcpStream>>>, Socks5InitCommandContentCodec>,
     pub upload_bytes_amount: Arc<AtomicU64>,
     pub download_bytes_amount: Arc<AtomicU64>,
     pub stopped_status: Arc<AtomicBool>,
@@ -73,7 +76,7 @@ where
     F: RsaCryptoFetcher + Send + Sync + 'static,
 {
     config: Arc<AgentServerConfig>,
-    client_tcp_stream: TcpStream,
+    client_tcp_stream: Pin<Box<TimeoutStream<TcpStream>>>,
     src_address: PpaassUnifiedAddress,
     initial_buf: BytesMut,
     client_socket_address: PpaassUnifiedAddress,
@@ -88,7 +91,7 @@ where
 {
     pub(crate) fn new(
         create_request: TunnelCreateRequest<F>,
-        client_tcp_stream: TcpStream,
+        client_tcp_stream: Pin<Box<TimeoutStream<TcpStream>>>,
         initial_buf: BytesMut,
     ) -> Self {
         Self {
@@ -245,7 +248,7 @@ where
     async fn start_udp_relay(
         config: &AgentServerConfig,
         proxy_connection_factory: &ProxyConnectionFactory<F>,
-        client_tcp_stream: TcpStream,
+        client_tcp_stream: Pin<Box<TimeoutStream<TcpStream>>>,
         agent_udp_bind_socket: UdpSocket,
         client_udp_restrict_address: PpaassUnifiedAddress,
     ) -> Result<(), AgentServerError> {
@@ -261,7 +264,7 @@ where
     }
 
     async fn check_udp_relay_tcp_connection(
-        mut client_tcp_stream: TcpStream,
+        mut client_tcp_stream: Pin<Box<TimeoutStream<TcpStream>>>,
     ) -> Result<(), AgentServerError> {
         loop {
             let mut client_data_buf = [0u8; 1];
@@ -343,7 +346,10 @@ where
     async fn handle_bind_command(
         src_address: PpaassUnifiedAddress,
         dst_address: PpaassUnifiedAddress,
-        mut socks5_init_framed: Framed<TcpStream, Socks5InitCommandContentCodec>,
+        mut socks5_init_framed: Framed<
+            Pin<Box<TimeoutStream<TcpStream>>>,
+            Socks5InitCommandContentCodec,
+        >,
     ) -> Result<(), AgentServerError> {
         unimplemented!("Still not implement the socks5 bind command")
     }
@@ -352,7 +358,10 @@ where
         config: &AgentServerConfig,
         proxy_connection_factory: &ProxyConnectionFactory<F>,
         client_udp_restrict_address: PpaassUnifiedAddress,
-        mut socks5_init_framed: Framed<TcpStream, Socks5InitCommandContentCodec>,
+        mut socks5_init_framed: Framed<
+            Pin<Box<TimeoutStream<TcpStream>>>,
+            Socks5InitCommandContentCodec,
+        >,
     ) -> Result<(), AgentServerError> {
         debug!(
             "Client do socks5 udp associate on restrict address: {client_udp_restrict_address:?}"

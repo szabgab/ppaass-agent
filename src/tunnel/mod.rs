@@ -17,7 +17,7 @@ use futures_util::{SinkExt, StreamExt};
 
 use ppaass_crypto::crypto::RsaCryptoFetcher;
 use tracing::{debug, error};
-
+use std::pin::Pin;
 use ppaass_protocol::generator::PpaassMessageGenerator;
 use ppaass_protocol::message::payload::tcp::ProxyTcpPayload;
 use ppaass_protocol::message::values::address::PpaassUnifiedAddress;
@@ -38,7 +38,7 @@ where
     F: RsaCryptoFetcher,
 {
     tunnel_id: String,
-    client_tcp_stream: TcpStream,
+    client_tcp_stream: Pin<Box<TimeoutStream<TcpStream>>>,
     client_socket_address: PpaassUnifiedAddress,
     src_address: PpaassUnifiedAddress,
     dst_address: PpaassUnifiedAddress,
